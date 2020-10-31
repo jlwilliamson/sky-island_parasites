@@ -1,0 +1,186 @@
+---
+title: "EstimateS richness plots"
+author: "Jessie Williamson"
+date: "7/17/2017"
+output: html_document
+---
+
+######
+
+One of several .rmd files associated with Williamson et al. 2019 "Community composition of sky-island parasites in Audubon's Warblers", International Journal for Parasitology: 10.1016/j.ijpara.2018.11.012. 
+
+Script includes data for alpha richness plots. 
+
+Code originally written as a .Rmd in 2017-2019 but cleaned up a bit for GitHub upload on 10/31/20. 
+
+#####
+
+
+
+# ALPHA RICHNESS PLOTS 
+
+# Read in Chao1 richness data for haplotypes and haplogroups
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("~/Desktop/Rdirectory/YRWA_malaria")
+rich <- read.csv("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/YRWA_AlphaRichness_Plots_EstimateSOutput.csv")
+```
+
+
+# Box plot of Chao1 alpha richness of haplotypes per site 
+
+## Note: these pannels are designed as a top-bottom two-panel figure
+
+## Haplotype Chao1 Richness plot (mean data plotted w/ 95% CI; taken from EstimateS)
+```{R}
+library(ggplot2)
+p <- ggplot(rich, aes(x=site, y=haplo_chao1))
+p <- p + geom_errorbar(aes(ymin=haplo_lower, ymax=haplo_upper), colour="black", width=.1)
+p <- p + geom_line()
+p <- p + geom_point(size=3)
+p <- p + labs(x = "", y = "Haplotype Chao1 Richness")
+p <- p + theme_bw()
+p <- p + theme(plot.background = element_blank())
+p <- p + theme(panel.grid.major = element_blank())
+p <- p + theme(panel.grid.minor = element_blank())
+p <- p + theme(panel.background = element_blank())
+print(p)
+```
+
+## Haplogroup Chao1 Richness plot (mean data plotted w/ 95% CI; taken from EstimateS)
+```{R}
+library(ggplot2)
+p1 <- ggplot(rich, aes(x=site, y=hg_chao1))
+p1 <- p1 + geom_errorbar(aes(ymin=hg_lower, ymax=hg_upper), colour="black", width=.1)
+p1 <- p1 + geom_line()
+p1 <- p1 + geom_point(size=3)
+p1 <- p1 + labs(x = "Site", y = "Haplogroup Chao1 Richness")
+p1 <- p1 + theme_bw()
+p1 <- p1 + theme(plot.background = element_blank())
+p1 <- p1 + theme(panel.grid.major = element_blank())
+p1 <- p1 + theme(panel.grid.minor = element_blank())
+p1 <- p1 + theme(panel.background = element_blank())
+print(p1)
+```
+
+
+## test for differences among richness in haplotypes
+```{R}
+# histogram density + normal curve plot, QQ plot, aov, Levene's, and normality tests were being funky
+# I decided that data are probably not normally distributed and that aov is acting up because I only have 
+# one mean for each group. So, opting for Kruskal-Wallis. 
+
+# Kruskal-Wallis
+kruskal1 <- kruskal.test(haplo_chao1 ~ site, data=rich)
+kruskal1
+
+# p = 0.42 = no significant differences in haplotype alpha richness among mountain ranges. 
+```
+
+
+## test of significant differences among haplogroups in alpha richness
+```{R}
+# same as above; opted for Kruskal-Wallis
+
+# Kruskal-Wallis
+kruskal2 <- kruskal.test(hg_chao1 ~ site, data=rich)
+kruskal2
+
+kruskal3 <- kruskal.test(haplo_lower ~ site, data=rich)
+kruskal3
+```
+
+
+
+# THESE ARE FOR TYPICAL ESTIMATE S ARC SPECIES CURVES 
+
+# Read in EstimateS Haplotype data 
+```{R}
+haplo_est <- read.csv("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/EstimateS/EstimateS_haplotype_graphing.csv")
+```
+
+# EstimateS graphing - Haplotypes
+```{R}
+x <- haplo_est$Individuals
+
+# Notes about text below:
+# first 2 lines: set up initial plot
+# polygon thing = giving it coordinates of polygon; s = # infections
+# solid line, then dogged line (lines 3-4)
+# Color: light sea green = #20B2AA; RGB: (32,178,170)
+
+par(mfrow=c(2,2)) # Should make all display in 2 rows and 2 columns
+
+# CAPITAN - 7 infections, 6 haplotypes
+Capitan_Lower <- haplo_est$Capitan_Lower
+Capitan_Upper <- haplo_est$Capitan_Upper
+plot(x[1:7],haplo_est$Capitan_Est[1:7],type='l',lty=1,ylim=c(0,100),xlim=c(0,100),xlab="Infections Sampled",ylab="Number of Haplotypes", main="Capitan") # need to change plot dimensions
+polygon(c(rev(x),x),c(rev(Capitan_Upper),Capitan_Lower),col="#20B2AA",border=NA)
+lines(x[1:7],haplo_est$Capitan_Est[1:7],lty=1) # Solid line; I probably change this to 1:7 
+lines(x[7:100],haplo_est$Capitan_Est[7:100],lty=2) # Dotted line; then 7:whatever the last number is
+points(7,6,pch=19) #coordinates for capitan = #infections,#haplotypes (e.g. 7,6)
+
+# CHUSKA - 46 infections, 16 haplotypes
+Chuska_Lower <- haplo_est$Chuska_Lower
+Chuska_Upper <- haplo_est$Chuska_Upper
+plot(x[1:46],haplo_est$Chuska_Est[1:46],type='l',lty=1,ylim=c(0,100),xlim=c(0,100),xlab="Infections Sampled",ylab="Number of Haplotypes", main="Chuska") 
+polygon(c(rev(x),x),c(rev(Chuska_Upper),Chuska_Lower),col="#20B2AA",border=NA)
+lines(x[1:46],haplo_est$Chuska_Est[1:46],lty=1) 
+lines(x[47:100],haplo_est$Chuska_Est[47:100],lty=2) # then 7:whatever the last number is
+points(46,16,pch=19) 
+
+# JEMEZ - 17 infections, 13 haplotypes
+Jemez_Lower <- haplo_est$Jemez_Lower
+Jemez_Upper <- haplo_est$Jemez_Upper
+plot(x[1:17],haplo_est$Jemez_Est[1:17],type='l',lty=1,ylim=c(0,100),xlim=c(0,100),xlab="Infections Sampled",ylab="Number of Haplotypes", main="Jemez") 
+polygon(c(rev(x),x),c(rev(Jemez_Upper),Jemez_Lower),col="#20B2AA",border=NA)
+lines(x[1:17],haplo_est$Jemez_Est[1:17],lty=1) 
+lines(x[18:100],haplo_est$Jemez_Est[18:100],lty=2) # then 7:whatever the last number is
+points(17,13,pch=19) 
+
+# MT. TAYLOR - 32 infections, 16 haplotypes
+MtTaylor_Lower <- haplo_est$MtTaylor_Lower
+MtTaylor_Upper <- haplo_est$MtTaylor_Upper
+plot(x[1:32],haplo_est$MtTaylor_Est[1:32],type='l',lty=1,ylim=c(0,100),xlim=c(0,100),xlab="Infections Sampled",ylab="Number of Haplotypes", main="Mt. Taylor") 
+polygon(c(rev(x),x),c(rev(MtTaylor_Upper),MtTaylor_Lower),col="#20B2AA",border=NA)
+lines(x[1:32],haplo_est$MtTaylor_Est[1:32],lty=1) 
+lines(x[33:100],haplo_est$MtTaylor_Est[33:100],lty=2) # then 7:whatever the last number is
+points(32,16,pch=19) 
+
+# SANGRE DE CRISTO - 8 infections, 4 haplotypes
+Sangre_Lower <- haplo_est$Sangre_Lower
+Sangre_Upper <- haplo_est$Sangre_Upper
+plot(x[1:8],haplo_est$Sangre_Est[1:8],type='l',lty=1,ylim=c(0,100),xlim=c(0,100),xlab="Infections Sampled",ylab="Number of Haplotypes", main="Sangre de Cristo") 
+polygon(c(rev(x),x),c(rev(Sangre_Upper),Sangre_Lower),col="#20B2AA",border=NA)
+lines(x[1:8],haplo_est$Sangre_Est[1:8],lty=1) 
+lines(x[9:100],haplo_est$Sangre_Est[9:100],lty=2) # then 7:whatever the last number is
+points(8,4,pch=19) 
+
+# SAN MATEO - 15 infections, 9 haplotypes
+SanMateo_Lower <- haplo_est$SanMateo_Lower
+SanMateo_Upper <- haplo_est$SanMateo_Upper
+plot(x[1:15],haplo_est$SanMateo_Est[1:15],type='l',lty=1,ylim=c(0,100),xlim=c(0,100),xlab="Infections Sampled",ylab="Number of Haplotypes", main="San Mateo") 
+polygon(c(rev(x),x),c(rev(SanMateo_Upper),SanMateo_Lower),col="#20B2AA",border=NA)
+lines(x[1:15],haplo_est$SanMateo_Est[1:15],lty=1) 
+lines(x[16:100],haplo_est$SanMateo_Est[16:100],lty=2) # then 7:whatever the last number is
+points(15,9,pch=19) 
+
+# WHITE - 16 infections, 9 haplotypes
+White_Lower <- haplo_est$White_Lower
+White_Upper <- haplo_est$White_Upper
+plot(x[1:16],haplo_est$White_Est[1:16],type='l',lty=1,ylim=c(0,100),xlim=c(0,100),xlab="Infections Sampled",ylab="Number of Haplotypes", main="White") 
+polygon(c(rev(x),x),c(rev(White_Upper),White_Lower),col="#20B2AA",border=NA)
+lines(x[1:16],haplo_est$White_Est[1:16],lty=1) 
+lines(x[17:100],haplo_est$White_Est[17:100],lty=2) # then 7:whatever the last number is
+points(16,9,pch=19)
+
+# ZUNI - 17 infections, 9 haplotypes
+Zuni_Lower <- haplo_est$Zuni_Lower
+Zuni_Upper <- haplo_est$Zuni_Upper
+plot(x[1:17],haplo_est$Zuni_Est[1:17],type='l',lty=1,ylim=c(0,100),xlim=c(0,100),xlab="Infections Sampled",ylab="Number of Haplotypes", main="Zuni") 
+polygon(c(rev(x),x),c(rev(Zuni_Upper),Zuni_Lower),col="#20B2AA",border=NA)
+lines(x[1:17],haplo_est$Zuni_Est[1:17],lty=1) 
+lines(x[18:100],haplo_est$Zuni_Est[18:100],lty=2) # then 7:whatever the last number is
+points(17,9,pch=19)
+
+```
