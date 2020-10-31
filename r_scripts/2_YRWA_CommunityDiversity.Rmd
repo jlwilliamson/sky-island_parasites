@@ -1,0 +1,1259 @@
+---
+title: "YRWA Community Diversity Script"
+author: "Jessie Williamson"
+date: "Last revised 11/03/2018"
+output: html_document
+---
+
+######
+
+One of several .rmd files associated with Williamson et al. 2019 "Community composition of sky-island parasites in Audubon's Warblers", International Journal for Parasitology: 10.1016/j.ijpara.2018.11.012. 
+
+Script includes data import and wrangling, transformations, PCA analyses, and infection modeling. 
+
+Code originally written as a .Rmd in 2017-2019 but cleaned up a bit for GitHub upload on 10/31/20. 
+
+#####
+
+
+
+<!---
+## IGNORE THIS
+# Erik's compile commands in R:
+  fn.this <- "YRWA_script.Rmd"
+  setwd("~/Desktop/Rdirectory/ADA2/Poster")
+  library(knitr)
+  knitr::purl(fn.this)
+  rmarkdown::render(fn.this)
+#
+# In case you're curious about what the code above does:
+# The purl()   command strips out all the code chunks and writes them to an *.R file
+# The render() command does the same as the "Knit HTML" button,
+#   but all the variables are created in the console.
+# I use these commands because I use a different text editor than RStudio.
+## IGNORE THIS
+-->
+
+
+```{R, echo=FALSE}
+# I set some GLOBAL R chunk options here.
+#   (to hide this message add "echo=FALSE" to the code chunk options)
+
+knitr::opts_chunk$set(comment = NA, message = FALSE, warning = FALSE, width = 100)
+knitr::opts_chunk$set(fig.align = "center", fig.height = 4, fig.width = 6)
+
+#knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+```
+
+---
+
+# Set WD
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/Dropbox (MSBbirds)/Rdirectory/YRWA_Malaria")
+```
+
+
+# Load packages
+```{R Load packages}
+# graph packages - Run these first 
+library(reshape)
+library(car)
+library(GGally)
+library(Hmisc)
+library(gridExtra)
+library(stats)
+library(gplots)
+library(ggplot2)
+library(effects)
+library(plyr)
+library(dplyr)
+library(gridExtra)
+library(lattice)
+library(survival)
+library(stats4) # Knitr stopped working and asked me to add this
+library(PMCMR) #Allows Kruskal-Wallis post-hocs
+library(fmsb)
+library(faraway)
+library(reshape2)
+library(popbio)
+library(arm)
+library(adegenet)
+library (vegan) # comm div
+library(picante) # comm div
+library(cluster)
+library(ade4) # comm div
+library(plyr)
+library(ape)
+library(GUniFrac) # UniFrac
+library(grid) # required for envfit arrows
+library(car)
+library(vegan)
+library(ape)
+library(phytools)
+library(geiger)
+library(gdm)
+library(MASS)
+```
+
+
+
+
+# COMMUNITY DIVERSITY ANALYSES
+
+## HAPLOTYPES: Import community data
+```{R Import Community Data}
+# Haplotype per mountain range data (abundance dataset)
+haplo.abun <- read.csv("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/YRWA_CommDiv_HaploAbundance_07-06-17.csv")
+# Note: rows are the following names of mountain ranges in alphabetical order
+rownames(haplo.abun) <- c("Capitan", "Chuska", "Jemez", "MtTaylor",
+                    "SangreDC", "SanMateo", "White", "Zuni")
+# This row names function manually adds row names in R
+# Need to remove first column of row names in .csv or diversity analyses will be all weird
+```
+
+
+## RAREFY HAPLOTYPE DATA 
+Basically: you have uneven sampling effort in each mountain range, so results downstream will be wonky. You need to rarefy the data to represent communities with more even sampling effort. 
+
+Jessie and Selina figured out: I can't take average of 1000 matrices because I'll get decimals. Two problems: this will disproportionately over-represent some rare haplotypes, leading rare species to look more common than they actually are, which will affect jaccard and unifrac values by making them more similar. And: how do you take the average of a presence/absence and simultaneously take the average of an abundance of a presence absence? 
+
+What makes more sense is to generate 1000 rarefied matrices and to loop each of these into jaccard and Unifrac. Then, I'll have 1000 Jaccard matrices and 1000 unifrac matrices. I can take the average values of these to be my final dissimilariy results, which will filter into GDM. 
+
+MAKE SURE REDUCE IS DOING WHAT I THINK IT'S DOING. 
+
+```{r Rarefy haplotype data}
+# Note: you rarefied with min number of infections per mountain, NOT min number of bird samples. 
+
+# RAREFY() IS BASED ON SPECIES RICHNESS; RRAREFY() IS RANDOMLY SUBSAMPLING BASED ON EFFORT
+
+library(vegan)
+set.seed(43869)
+spec <- specnumber(haplo.abun); spec # observed number of haplotypes/mountain; checks out with hand-count
+infection.min <- min(rowSums(haplo.abun)) # sets min number of infections (min of rowsums from haplo.abun)
+spec.rar <- rarefy(haplo.abun, infection.min); spec.rar # rarefied haplotype numbers 
+plot(spec, spec.rar, xlab = "Observed No. of Species", ylab = "Rarefied No. of Species")
+abline(0, 1)
+rarecurve(haplo.abun, step = 20, sample = infection.min, col = "blue", cex = 0.6)
+
+test.rar <- rrarefy(haplo.abun, infection.min) # rarefied dataset based on infection.min (smallest # observed)
+rowSums(test.rar) # this should give us 7/per row if it's rarefying based on a community of 7
+
+# Rarefy(haplo.abun, depth = min(rowSums(haplo.abun))) # GUniFrac's version of rrarefy
+
+# LOOP RRAREFY 1000x and take the average value for each haplotype; use that in downstream analyses
+rarloop <- vector(mode = "list", length=1000)
+for (i in seq_along(rarloop)) {
+    rarloop[[i]] <- rrarefy(haplo.abun, infection.min)
+}
+# haplo.abun.rar <- Reduce(`+`, rarloop) / length(rarloop) # one matrix w/ average values for each cell
+```
+
+# Test of looping and reduce()
+```{r Test of looping and Reduce()}
+hi <- matrix(ncol=3,2)
+hiloop <- vector(mode = "list", length=3)
+for (i in seq_along(hiloop)) {
+    hiloop[[i]] <- rrarefy(hi, 2)
+}
+
+hiavg <- Reduce(`+`, hiloop) / length(hiloop)  
+# yay!
+```
+
+
+## HAPLOGROUP: Import community data
+```{R}
+# Haplogroup per mountain range data (abundance dataset)
+hg.abun <- read.csv("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/YRWA_CommDiv_HaplogroupAbundance_07-12-17.csv")
+# Note: rows are the following names of mountain ranges in alphabetical order
+rownames(hg.abun) <- c("Capitan", "Chuska", "Jemez", "MtTaylor",
+                    "SangreDC", "SanMateo", "White", "Zuni")
+# See notes above about text and eliminating weird outputs
+
+###### RAREFY HAPLOGROUP DATA #########
+spec.hg <- specnumber(hg.abun); spec.hg # observed number of haplotypes/mountain; checks out with hand-count
+infection.min.hg <- min(rowSums(hg.abun)) # sets min number of infections (min of rowsums from haplo.abun)
+# spec.rar.hg <- rarefy(hg.abun, infection.min.hg); spec.rar.hg # rarefied haplotype numbers 
+
+rarloop.hg <- vector(mode = "list", length=1000)
+for (i in seq_along(rarloop.hg)) {
+    rarloop.hg[[i]] <- rrarefy(hg.abun, infection.min.hg)
+}
+```
+
+
+# Import rooted trees (nexus format; from Fig Tree; rooted w/ Leucocytozoon)
+```{R}
+# Note: manually add ".nex" to file after exporting as nexus from FigTree
+# NOTE ON 10/31/20: THESE DIRECTORIES ARE NOT UPDATED! IF RE-RUNNING THIS, UPDATE DIRECTORIES. 
+
+# haplotype tree 
+haplo.tree <- read.nexus("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/YRWA-RAxML/Haplotype_Tree_rerooted_formatted_FINAL_07-25-17_nexus.nex")
+plot(haplo.tree) # this pulls up tree, except note that Leuco is on top (vs. Fig Tree where it's on bottom)
+
+# haplogroup tree
+treehg <- read.nexus("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/YRWA-RAxML/haplogroup_rerooted_FINAL_nexus_07-21-17.nex")
+plot(treehg)
+```
+
+
+
+# BIRD COMMUNITY DIVERSITY ANALYSES
+
+## Import bird community pres/abs data
+```{R}
+# Haplotype per mountain range data (abundance dataset)
+birdcomm <- read.csv("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/BirdCommDiv_SkyIslandMatrix_Final_JLW.csv")
+```
+
+
+# Transpose matrix, delete mountain range column (col. 1) and rename rows:
+Brief description of transpose: http://www.statmethods.net/management/reshape.html
+```{R}
+# Matrix needs to be formatted so that mountain ranges go down and birds go across; e.g.: 
+# Mtn range labels need to be in col. one and row labels need to be written across the top
+# Need to transpose matrix to reformat (current .csv format is incorrect)
+tbirdcomm <- t(birdcomm)
+tbirdcomm #test to make sure everything flipped as it should have
+
+# Write file to csv to edit formatting
+write.csv(tbirdcomm, file = "BirdCommDiv_Reshaped.csv")
+# make sure to remove col 1 for mountain range names (alternative: delete columns and reshape in R)
+```
+
+```{R}
+# Now, import actual data set you'll use, formatted properly: 
+birdsfinal <- read.csv("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/BirdCommDiv_Reshaped_Final.csv")
+# Make sure you find and replace all species with underscores so that this matrix matches phylo tree labels
+
+# Note: rows are the following names of mountain ranges in alphabetical order
+rownames(birdsfinal) <- c("Capitan", "Chuska", "Jemez", "MtTaylor",
+                    "SangreDC", "SanMateo", "White", "Zuni")
+# This row names function manually adds row names in R
+# Need to remove first column of row names in .csv or diversity analyses will be all weird
+
+# Check for NA values in the matrix; you want FALSE 
+any(is.na(birdsfinal)) # Answer is FALSE = no NA values
+```
+
+
+# Import rooted bird trees (nexus format)
+**NOTE: TREE NEEDS TO BE ROOTED OR THIS WON'T WORK
+
+Note: manually add ".nex" to file after exporting as nexus from FigTree
+*Can't use write.tre, as this only accepts a single file as input and you have 100 trees from BirdTree 
+```{R}
+birdtrees <- read.nexus("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/birdtreenex.nex")
+# set of 100 trees (multiphylo object) generated from BirdTree.org
+# plot(birdtree) will plot 100 trees (slow & annoying)
+
+## NOTE: SEE YRWA CUT FOR OLD METHOD OF EXTRACTING ONE TREE, CHANGING NAMES, RE-IMPORTING = BAD METHOD
+
+# update outdated BirdTree names; create list of outdated names
+bad.names <- c("Carduelis_tristis", "Parus_atricapillus", "Dendroica_nigrescens", "Pipilo_fuscus", "Carpodacus_cassinii", "Otus_flammeolus", "Dendroica_graciae", "Carpodacus_mexicanus", "Carduelis_psaltria", "Oporornis_tolmiei", "Aphelocoma_ultramarina", "Caprimulgus_vociferus", "Parus_gambeli", "Vermivora_celata", "Carduelis_pinus", "Vermivora_virginiae", "Gallinago_gallinago", "Wilsonia_pusilla", "Aphelocoma_californica", "Dendroica_coronata")
+
+# Create list of current names that you'll replace bad.names with
+good.names <- c("Spinus_tristis", "Poecile_atricapillus", "Setophaga_nigrescens", "Melozone_fusca", "Haemorhous_cassinii", "Psiloscops_flammeolus", "Setophaga_graciae", "Haemorhous_mexicanus", "Spinus_psaltria", "Geothlypis_tolmiei", "Aphelocoma_wollweberi", "Antrostomus_arizonae", "Poecile_gambeli", "Oreothlypis_celata", "Spinus_pinus", "Oreothlypis_virginiae", "Gallinago_delicata", "Cardellina_pusilla", "Aphelocoma_woodhouseii", "Setophaga_coronata")
+
+ # Update a single tree that you'll use for paper analyses
+ birdtree1 <- birdtrees[[1]]
+  for (i in 1:length(birdtree1$tip.label)) {
+    for (j in 1:20){
+      if (birdtree1$tip.label[i] == bad.names[j]){
+        birdtree1$tip.label[i] = good.names[j]
+      }
+    }
+  }
+is.rooted(birdtree1) # verify that tree is rooted; TRUE = tree is rooted (we want this)
+plot(birdtree1)
+# This tree is what you'll use downstream in UniFrac and GDM
+
+# --------------
+
+# BUT: Are UniFrac dissimilarity values affected by phylogenetic relationships? 
+# Quick test of multiple trees for our reviewer w/ 10 trees
+# Update trees 1-10 to reflect current taxonomy (i.e. loop through trees 1-10, replacing bad w/ good)
+for (tree in birdtrees[1:10]) {
+  for (i in 1:length(tree$tip.label)) {
+    for (j in 1:20) {
+      if (tree$tip.label[i] == bad.names[j]) {
+        tree$tip.label[i] <- good.names[j]
+      }
+    }
+  }
+}
+
+# We'll use these updated trees in UniFrac (below) as a test for our reviewer that dissimilarity values
+# don't change much when you use different bird trees 
+
+# See YRWA_CUT for attempts at creating a consensus tree 
+```
+
+
+# Community diversity metadata for beta diversity indices, NMDS, and GLMs:
+```{R}
+# Load in metadata for all downstream analyses: 
+metadata <- read.csv("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/YRWA_CommDiv_ForMantel_Metadata_07-21-17.csv") 
+# This is essentially a summary per mountain range. You'll use this for NMDS and GLMS. 
+# Cols, in order: # birds sampled/site, # birds infected/site, prevalence/site (# birds infected/# birds sampled), mean lat, mean lon, species richness, and phylo distance (latter two calculated above w/ Faith's PD)
+```
+
+
+
+
+# PARASITE COMMUNITY STRUCTURE
+
+## Haplotype and haplogroup alpha diversity were calculated using the Chao1 index in EstimateS
+See YRWA_EstimateS_graphs for outputs; see all Excel/.txt files for EstimateS results 
+
+
+**Beta diversity workflow:**   
+Haplotypes: 
+- Read in diversity matrix (haplo.abun)
+- Rarefy haplotype and haplogroup data in a loop 1000x
+- Feed each rrarefy() output for haplotypes and haplogroups into a loop of 1000 Jaccard and UniFrac matrices
+- Calculate average values for the 1000 dissimilarity matrices to settle on a "true" value. 
+- Feed into NMDS
+- Get MDS values into data frame
+_ Use procrustes and protest() to compare bird vs. haplotype and bird vs. haplotype group community matrices. 
+- Use scale() to standardize and center all predictor variables 
+- Generalized Dissimilarity Modeling (GDM)
+      - GDM1: response = rarefied haplotype data. Predictors: lat, lon, PC1, PC2, bird MDS1, bird MDS2
+      - GDM2: response = bird comm matrix. Predictors: lat, lon, PC1, PC2, parasite MDS1, parasite MDS2
+
+- How to check assumptions with GDM? --> see below.
+
+- Ara says: PERMANOVA doesn't handle non-normally distributed data well; it's also not meant to handle differnt spatial scales, such as what I have here (multiple sampling localities within a mountain range site; these are essentially nested within site/have been collapsed into site) 
+- So: FOR ALL NMDS: GET RID OF ALL NON UNIFRAC; JUST USE UW UNIFRAC (phylogeny seems important) 
+
+# JACCARD DISTANCE
+## HAPLOTYPE: Non-phylogenetic beta diversity (Jaccard distance matrix)
+```{R Jaccard}
+# Jaccard (presence-absence) community dissimilarity matrix 
+# Loop of 1000 matrices
+
+jaccardloop <- vector(mode = "list", length=1000)
+for (i in 1:1000) {
+    jaccardloop[[i]] <- vegdist(rarloop[[i]], method = 'jaccard', binary = TRUE) # binary=TRUE for pres/abs
+}
+
+# Take the average values of the 1000 Jaccard matrices; THIS IS FINAL JACCARD HAPLOTYPE MATRIX
+haplo.abun.jaccard.rar <- Reduce(`+`, jaccardloop) / length(jaccardloop)
+hist(haplo.abun.jaccard.rar) # Looks normal enough
+```
+
+
+## HAPLOGROUP: Non-phylogenetic beta diversity (Jaccard distance matrix)
+```{R}
+# Jaccard (presence-absence) community dissimilarity matrix 
+jaccardloop.hg <- vector(mode = "list", length=1000)
+for (i in 1:1000) {
+    jaccardloop.hg[[i]] <- vegdist(rarloop.hg[[i]], method = 'jaccard', binary = TRUE) # binary=TRUE for pres/abs
+}
+
+# Take the average values of the 1000 Jaccard matrices; THIS IS FINAL JACCARD HAPLOTYPE MATRIX
+hg.abun.jaccard.rar <- Reduce(`+`, jaccardloop.hg) / length(jaccardloop.hg)
+hist(hg.abun.jaccard.rar) # Looks normal enough
+```
+
+
+## BIRDS: Non-phylogenetic beta diversity (Jaccard distance matrix)
+```{R}
+# Jaccard (presence-absence) community dissimilarity matrix  
+birdcomm.jaccard <- vegdist(birdsfinal, method = "jaccard", binary = TRUE) # binary=TRUE for pres/abs
+# Control + F for 'NAs' in document; if NAs, you won't be able to calculate vegdist matrix
+birdcomm.jaccard
+hist(birdcomm.jaccard) # Looks normal enough
+
+# We don't need to loop this because we only have presence/absence; it isn't based on field sampling
+```
+
+
+
+## UniFrac Analysis
+Note: phyloseq involves multiple odd-formatted inputs that need to be combined, so I opted to use GUniFrac, which seemed more straightforward. 
+Note 2: if phyloseq is having trouble running (or if ever you get install problems), run the following line of code. I think this installs directly from GitHub:
+source("https://raw.githubusercontent.com/joey711/phyloseq/master/inst/scripts/installer.R",
+       local = TRUE)
+       
+## HAPLOTYPES: Phylogenetic beta diversity (unweighted UniFrac)
+```{R}
+# Weighted UniFrac = takes into account abundance, takes longer to calculate
+# Unweighted UniFrac = Only considers presence/absence of taxa 
+# So, we want unweighted unifrac because this is consistent w/ using Jaccard
+library(GUniFrac)
+unifracloop <- vector(mode = "list", length=1000) # generate 1 unifrac for each of the 1000 rarefied datasets
+for (i in 1:1000) {
+    unifracloop[[i]] <- GUniFrac(rarloop[[i]], haplo.tree, alpha=c(0, 0.5, 1))$unifracs
+}
+
+unifracloop.avg <- Reduce(`+`, unifracloop) / length(unifracloop) # Take the average of 1000 unifracs
+haplo.uni.uw.rar <- unifracloop.avg[,,"d_UW"] # extract unweighted UniFrac (presence/absence of sample pairs)
+# write.csv(haplo.uni.uw.rar, file = "haplo.uni.uw.rar.csv")
+
+# WHAT THIS MEANS: If matrix values are decreased with unweighted UniFrac (from Jaccard), it means that 
+# mountain ranges are more similar when taking phylogeny into account. 
+# This means that phylogeny is important (duh). 
+# Ara argues that, since they're lower for basically all mountain ranges, I should really only use the 
+# weighted UniFrac analysis for NMDS and GLMs. 
+```
+
+
+# Reformat final haplotype UniFrac matrix for GDM
+```{r Reformat final haplotype UniFrac matrix for GDM}
+
+haplo.gdm.biodata <- cbind(as.matrix(rownames(haplo.uni.uw.rar)), haplo.uni.uw.rar)
+colnames(haplo.gdm.biodata)[1]<- "site"
+
+# View this to make sure matrix is formatted properly as site-by-site distance matrix
+# "Site" MUST be written in the first column, top corner
+```
+
+
+## HAPLOGROUPS: Phylogenetic beta diversity (unweighted UniFrac)
+```{R}
+unifracloop.hg <- vector(mode = "list", length=1000) # generate 1 unifrac for each of the 1000 rarefied datasets
+for (i in 1:1000) {
+    unifracloop.hg[[i]] <- GUniFrac(rarloop.hg[[i]], treehg, alpha=c(0, 0.5, 1))$unifracs
+}
+
+unifracloop.avg.hg <- Reduce(`+`, unifracloop.hg) / length(unifracloop.hg) # Take the average of 1000 unifracs
+hg.uni.uw.rar <- unifracloop.avg.hg[,,"d_UW"] # extract unweighted UniFrac (presence/absence of sample pairs)
+hg.uni.uw.rar 
+write.csv(haplo.uni.uw.rar, file = "haplo.uni.uw.rar.csv")
+```
+
+
+## BIRDS: Phylogenetic beta diversity (unweighted UniFrac)
+```{R}
+# NOTE: BIRD TREE LABELS AND BIRD MATRIX LABELS MUST MATCH! (double-check for weird underscores)
+library(GUniFrac)
+
+# UniFrac of updated birdtree
+birdcomm.uni <- GUniFrac(birdsfinal, birdtree1, alpha=c(0, 0.5, 1))$unifracs
+# I tried changing alpha to just 1, as I set my p value to 1 for the consensus tree, above 
+birdcomm.uni.uw <- birdcomm.uni[,,"d_UW"]; birdcomm.uni.uw # extract unweighted UniFrac 
+
+# Note that phylogeny and Jaccard matrix should now have current taxonomic names (NOT BirdTree names)
+```
+
+
+### For reviewer: Verify that using only one birdtree doesn't affect results
+```{r}
+# Loop corrected birdtrees 1-10 through UniFrac
+birdunifraclist <- vector(mode = "list", length=10) 
+for (i in 1:10) {
+    birdunifraclist[[i]] <- GUniFrac(birdsfinal, birdtrees[[i]], alpha=c(0, 0.5, 1))$unifracs
+}
+
+# Extract Unweighted UniFrac outputs from looped birdunifractlist
+uw.outputs <- vector(mode = "list", length=10) 
+for (i in 1:10) {
+    uw.outputs[[i]] <- birdunifraclist[[i]][,,"d_UW"]
+}
+
+# Now, need to quantiatively compare all 10 matrices - are they sig diff? 
+# Chris' idea: make big box plot plot w/ individual boxes for mtn x mtn comparisons
+# make into array, make box plots by rows? (e.g. pairwise mtn x mtn comparison)
+
+# So, extract all pairwise mountain range comparisons from uw.outputs list
+
+# FIRST COLUMN 
+# Capitan-Chuska
+cap.chusk <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  cap.chusk[[i]] <- uw.outputs[[i]][2,1]
+}
+cap.chusk <- as.matrix(cap.chusk)
+cap.chusk.names <- matrix("cap.chusk", nrow=10, ncol=1)
+cap.chusk.mat <- cbind(cap.chusk.names, cap.chusk)
+
+# Capitan-Jemez
+cap.jem <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  cap.jem[[i]] <- uw.outputs[[i]][3,1]
+}
+cap.jem <- as.matrix(cap.jem)
+cap.jem.names <- matrix("cap.jem", nrow=10, ncol=1)
+cap.jem.mat <- cbind(cap.jem.names, cap.jem)
+
+# Capitan-Mt. Taylor
+cap.tay <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  cap.tay[[i]] <- uw.outputs[[i]][4,1]
+}
+cap.tay <- as.matrix(cap.tay)
+cap.tay.names <- matrix("cap.tay", nrow=10, ncol=1)
+cap.tay.mat <- cbind(cap.tay.names, cap.tay)
+
+# Capitan-Sangre
+cap.san <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  cap.san[[i]] <- uw.outputs[[i]][5,1]
+}
+cap.san <- as.matrix(cap.san)
+cap.san.names <- matrix("cap.san", nrow=10, ncol=1)
+cap.san.mat <- cbind(cap.san.names, cap.san)
+
+# Capitan-San Mateo
+cap.mateo <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  cap.mateo[[i]] <- uw.outputs[[i]][6,1]
+}
+cap.mateo <- as.matrix(cap.mateo)
+cap.mateo.names <- matrix("cap.mateo", nrow=10, ncol=1)
+cap.mateo.mat <- cbind(cap.mateo.names, cap.mateo)
+
+# Capitan-White
+cap.white <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  cap.white[[i]] <- uw.outputs[[i]][7,1]
+}
+cap.white <- as.matrix(cap.white)
+cap.white.names <- matrix("cap.white", nrow=10, ncol=1)
+cap.white.mat <- cbind(cap.white.names, cap.white)
+
+# Capitan-Zuni
+cap.zuni <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  cap.zuni[[i]] <- uw.outputs[[i]][8,1]
+}
+cap.zuni <- as.matrix(cap.zuni)
+cap.zuni.names <- matrix("cap.zuni", nrow=10, ncol=1)
+cap.zuni.mat <- cbind(cap.zuni.names, cap.zuni)
+
+
+# SECOND COLUMN 
+
+# Chuska-Jemez
+chusk.jem <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  chusk.jem[[i]] <- uw.outputs[[i]][3,2]
+}
+chusk.jem <- as.matrix(chusk.jem)
+chusk.jem.names <- matrix("chusk.jem", nrow=10, ncol=1)
+chusk.jem.mat <- cbind(chusk.jem.names, chusk.jem)
+
+# Chuska-Mt. Taylor 
+chusk.tay <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  chusk.tay[[i]] <- uw.outputs[[i]][4,2]
+}
+chusk.tay <- as.matrix(chusk.tay)
+chusk.tay.names <- matrix("chusk.tay", nrow=10, ncol=1)
+chusk.tay.mat <- cbind(chusk.tay.names, chusk.tay)
+
+# Chuska-Sangre
+chusk.san <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  chusk.san[[i]] <- uw.outputs[[i]][5,2]
+}
+chusk.san <- as.matrix(chusk.san)
+chusk.san.names <- matrix("chusk.san", nrow=10, ncol=1)
+chusk.san.mat <- cbind(chusk.san.names, chusk.san)
+
+# Chuska-San Mateo
+chusk.mateo <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  chusk.mateo[[i]] <- uw.outputs[[i]][6,2]
+}
+chusk.mateo <- as.matrix(chusk.mateo)
+chusk.mateo.names <- matrix("chusk.mateo", nrow=10, ncol=1)
+chusk.mateo.mat <- cbind(chusk.mateo.names, chusk.mateo)
+
+# Chuska-White
+chusk.white <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  chusk.white[[i]] <- uw.outputs[[i]][7,2]
+}
+chusk.white <- as.matrix(chusk.white)
+chusk.white.names <- matrix("chusk.white", nrow=10, ncol=1)
+chusk.white.mat <- cbind(chusk.white.names, chusk.white)
+
+# Chuska-Zuni
+chusk.zuni <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  chusk.zuni[[i]] <- uw.outputs[[i]][8,2]
+}
+chusk.zuni <- as.matrix(chusk.zuni)
+chusk.zuni.names <- matrix("chusk.zuni", nrow=10, ncol=1)
+chusk.zuni.mat <- cbind(chusk.zuni.names, chusk.zuni)
+
+# THIRD COLUMN 
+
+# Jemez-Mt. Taylor
+jem.tay <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  jem.tay[[i]] <- uw.outputs[[i]][4,3]
+}
+jem.tay <- as.matrix(jem.tay)
+jem.tay.names <- matrix("jem.tay", nrow=10, ncol=1)
+jem.tay.mat <- cbind(jem.tay.names, jem.tay)
+
+# Jemez-Sangre
+jem.san <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  jem.san[[i]] <- uw.outputs[[i]][5,3]
+}
+jem.san <- as.matrix(jem.san)
+jem.san.names <- matrix("jem.san", nrow=10, ncol=1)
+jem.san.mat <- cbind(jem.san.names, jem.san)
+
+# Jemez-San Mateo
+jem.mateo <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  jem.mateo[[i]] <- uw.outputs[[i]][6,3]
+}
+jem.mateo <- as.matrix(jem.mateo)
+jem.mateo.names <- matrix("jem.mateo", nrow=10, ncol=1)
+jem.mateo.mat <- cbind(jem.mateo.names, jem.mateo)
+
+# Jemez-White
+jem.white <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  jem.white[[i]] <- uw.outputs[[i]][7,3]
+}
+jem.white <- as.matrix(jem.white)
+jem.white.names <- matrix("jem.white", nrow=10, ncol=1)
+jem.white.mat <- cbind(jem.white.names, jem.white)
+
+# Jemez-Zuni
+jem.zuni <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  jem.zuni[[i]] <- uw.outputs[[i]][8,3]
+}
+jem.zuni <- as.matrix(jem.zuni)
+jem.zuni.names <- matrix("jem.zuni", nrow=10, ncol=1)
+jem.zuni.mat <- cbind(jem.zuni.names, jem.zuni)
+
+# FOURTH COLUMN 
+
+# Mt. Taylor-Sangre
+tay.san <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  tay.san[[i]] <- uw.outputs[[i]][5,4]
+}
+tay.san <- as.matrix(tay.san)
+tay.san.names <- matrix("tay.san", nrow=10, ncol=1)
+tay.san.mat <- cbind(tay.san.names, tay.san)
+
+# Mt. Taylor-San Mateo
+tay.mateo <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  tay.mateo[[i]] <- uw.outputs[[i]][6,4]
+}
+tay.mateo <- as.matrix(tay.mateo)
+tay.mateo.names <- matrix("tay.mateo", nrow=10, ncol=1)
+tay.mateo.mat <- cbind(tay.mateo.names, tay.mateo)
+
+# Mt. Taylor-White
+tay.white <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  tay.white[[i]] <- uw.outputs[[i]][7,4]
+}
+tay.white <- as.matrix(tay.white)
+tay.white.names <- matrix("tay.white", nrow=10, ncol=1)
+tay.white.mat <- cbind(tay.white.names, tay.white)
+
+# Mt. Taylor-Zuni 
+tay.zuni <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  tay.zuni[[i]] <- uw.outputs[[i]][8,4]
+}
+tay.zuni <- as.matrix(tay.zuni)
+tay.zuni.names <- matrix("tay.zuni", nrow=10, ncol=1)
+tay.zuni.mat <- cbind(tay.zuni.names, tay.zuni)
+
+# FIFTH COLUMN 
+
+# Sangre-San Mateo
+san.mateo <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  san.mateo[[i]] <- uw.outputs[[i]][6,5]
+}
+san.mateo <- as.matrix(san.mateo)
+san.mateo.names <- matrix("san.mateo", nrow=10, ncol=1)
+san.mateo.mat <- cbind(san.mateo.names, san.mateo)
+
+# Sangre-White
+san.white <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  san.white[[i]] <- uw.outputs[[i]][7,5]
+}
+san.white <- as.matrix(san.white)
+san.white.names <- matrix("san.white", nrow=10, ncol=1)
+san.white.mat <- cbind(san.white.names, san.white)
+
+# Sangre-Zuni 
+san.zuni <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  san.zuni[[i]] <- uw.outputs[[i]][8,5]
+}
+san.zuni <- as.matrix(san.zuni)
+san.zuni.names <- matrix("san.zuni", nrow=10, ncol=1)
+san.zuni.mat <- cbind(san.zuni.names, san.zuni)
+
+
+# SIXTH COLUMN
+
+# San Mateo-White
+mateo.white <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  mateo.white[[i]] <- uw.outputs[[i]][7,6]
+}
+mateo.white <- as.matrix(mateo.white)
+mateo.white.names <- matrix("mateo.white", nrow=10, ncol=1)
+mateo.white.mat <- cbind(mateo.white.names, mateo.white)
+
+# San Mateo-Zuni 
+mateo.zuni <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  mateo.zuni[[i]] <- uw.outputs[[i]][8,6]
+}
+mateo.zuni <- as.matrix(mateo.zuni)
+mateo.zuni.names <- matrix("mateo.zuni", nrow=10, ncol=1)
+mateo.zuni.mat <- cbind(mateo.zuni.names, mateo.zuni)
+
+
+# SEVENTH COLUMN
+
+# White-Zuni
+white.zuni <- vector(mode = "list", length=10) 
+for (i in 1:length(uw.outputs)) {
+  white.zuni[[i]] <- uw.outputs[[i]][8,7]
+}
+white.zuni <- as.matrix(white.zuni)
+white.zuni.names <- matrix("white.zuni", nrow=10, ncol=1)
+white.zuni.mat <- cbind(white.zuni.names, white.zuni)
+
+# THEN, rbind all mini matrices to make one larger data frame  
+data <- rbind(cap.zuni.mat, cap.white.mat, cap.chusk.mat, cap.jem.mat, cap.san.mat, cap.mateo.mat, 
+              cap.tay.mat, 
+              chusk.jem.mat, chusk.tay.mat, chusk.san.mat, chusk.mateo.mat, chusk.white.mat, chusk.zuni.mat,
+              jem.tay.mat, jem.san.mat, jem.mateo.mat, jem.white.mat,
+              tay.san.mat, tay.mateo.mat, tay.white.mat, tay.zuni.mat,
+              san.mateo.mat, san.white.mat, san.zuni.mat,
+              mateo.white.mat, mateo.zuni.mat,
+              white.zuni.mat)
+colnames(data) <- c("mtn", "values") # add column names
+
+# I can't figure out the error message "invalid type (list) for variable 'values"
+# I gave up trying to figure it out and am taking the lazy way out. 
+# Export to .csv, manually edit and re-save:
+write.csv(data, file="bird.mtn.uni.comp-11-03-18") 
+# NOTE: manually add .csv file extension becuase this isn't working
+
+# Reimport again and I'm good to go: 
+data.good <- read.csv("//Users/Jessie/Desktop/Rdirectory/YRWA_Malaria/bird.mtn.comp-edited.csv")
+```
+
+
+# Make boxplot of values
+```{r}
+# Base R version: 
+# Plot comparisons
+boxplot(as.matrix(values)~mtn,data=data.good, main="Comparison of dissimilarity values w/ multiple bird trees", xlab="Pairwise Mountain Range Comparisons", ylab="Variation in dissimilarity value")
+
+# ggplot2 version
+library(ggplot2)
+p <- ggplot(data.good, aes(x = mtn, y = values))
+p <- p + geom_boxplot(width = 1, alpha = 0.5)
+# p <- p + geom_jitter(position = position_jitter(width = 0.2), alpha = .8) # I don't want points 
+p <- p + labs(x="Pairwise Mountain Range Comparisons", y="Variation in Dissimilarity Values", title = " ")
+p <- p + theme_bw() 
+p <- p + theme(panel.grid.major = element_blank()) # Remove vertical lines 
+p <- p + theme(panel.grid.minor = element_blank()) # Remove horizontal lines 
+p <- p + theme(plot.background = element_blank())
+p <- p + theme(panel.background = element_blank())
+p <- p + theme(axis.text.x=element_text(angle=90, hjust=1, size=12))
+print(p)
+```
+
+
+# Reformat final bird UniFrac matrix for GDM
+```{r Reformat final haplotype UniFrac matrix for GDM}
+
+bird.gdm.biodata <- cbind(as.matrix(rownames(birdcomm.uni.uw)), birdcomm.uni.uw)
+colnames(bird.gdm.biodata)[1]<- "site"
+
+# View this to make sure matrix is formatted properly as site-by-site distance matrix
+# "Site" MUST be written in the first column, top corner
+```
+
+
+---------
+
+# NMDS 
+NMDS is a robust method that makes few assumptions about the data 
+
+Questions to ponder: How are non-phylo and phylo methods different? 
+How do unweighted metrics (Sørenson, unweighted UniFrac) differ in pattern from weighted metrics 
+(Bray-Curtis, weighted UniFrac)? 
+How do phylogenetic metrics (weighted UniFrac, unweighted UniFrac) differ in pattern from taxonomic 
+mEtrics (Bray-Curtis, Sørenson)? 
+What does this tell us about the relative importance of ecological characteristics of our communities 
+in determining the overarching patterns we observe?
+
+Interpretation of NMDS: things that are closer together are more similar; if further apart, less similar
+A line in the data (e.g. san mateo, sangre, jemez, mt. taylor, means that some environmental gradient is driving the pattern we see)
+
+NOTE: Used metaMDS() because it automatically scales. Multiple random starts (places points randomly and arranged best on stress; gives better results), standardizes scaling in results. 
+
+## HAPLOTYPE - NMDS
+Stress: 
+Note stress values as this computes: the lower the value, the lower the stress = better; < 0.05 is good; above means high stress, which isn't ideal. Stress can be minimized by adding k = 3 dimensions or incorporating more tries.
+
+Stressplot: 
+Large scatter around the line suggests that original dissimilarities are not well preserved in the reduced number of dimensions. This output looks ok. 
+```{R}
+# Haplotypes - non phylogenetic - Jaccard
+#set.seed(201) # allows me to reproduce results in the future
+#haplo.mds.jaccard.rar <- metaMDS(haplo.abun.jaccard.rar) # this plots NMDS of Jaccard dissimilarity matrix
+#ordiplot(haplo.mds.jaccard.rar, type="t")
+#haplo.MDS.jac.rar <- as.data.frame(haplo.mds.jaccard.rar$points) # get MDS output into data frame 
+# These NMDS values are essentially Jaccard matrix values collapsed into 2 columns/variables
+#metadata$haplo.MDS1.jac.rar <- haplo.MDS.jac.rar$MDS1 
+#metadata$haplo.MDS2.jac.rar <- haplo.MDS.jac.rar$MDS2 
+# The above 2 lines of code are saying: 
+# Take the variable called "MDS1" and "MDS2" in the haplo.MDS data frame and add these to 'metadata'
+# ANd, when you add them to the metadata data frame, rename them "haplo.MDS1.jac" and "haplo.MDS2.jac"
+# Now you can use these MDS values as variables in downstream analyses
+# Inputs (response variables) for downstream GLMS: 'haplo.MDS1.jac' and 'haplo.MDS2.jac'
+#stressplot(haplo.mds.jaccard.rar)
+
+
+# Haplotypes - phylogenetic (UniFrac)
+set.seed(201)
+haplo.mds.uniuw.rar <- metaMDS(haplo.uni.uw.rar, k=2, try=500) # plot of MDS w/ weighted UniFrac dissimilarity matrix
+plot(haplo.mds.uniuw.rar, type="t")
+stressplot(haplo.mds.uniuw.rar) 
+haplo.MDS.uni.rar <- as.data.frame(haplo.mds.uniuw.rar$points) # Use unweighted UniFrac output
+# Now you get unweighted UniFrac matrix values collapsed into 2 columns/variables
+metadata$haplo.MDS1.uni.rar <- haplo.MDS.uni.rar$MDS1 
+metadata$haplo.MDS2.uni.rar <- haplo.MDS.uni.rar$MDS2 
+# Inputs (response variables) for downstream GLMS: 'haplo.MDS1.uni' and 'haplo.MDS2.uni'
+```
+
+
+## HAPLOGROUPS: NMDS
+```{R}
+# Haplogroups - non phylogenetic
+#set.seed(201)
+#hg.mds.jaccard <- metaMDS(hg.abun.jaccard) # this plots NMDS of Jaccard dissimilarity matrix
+#plot(hg.mds.jaccard, type="t")
+#hg.MDS.jac <- as.data.frame(hg.mds.jaccard$points) # use Jaccard output
+# These NMDS values are essentially Jaccard matrix values collapsed into 2 columns/variables
+#metadata$hg.MDS1.jac <- hg.MDS.jac$MDS1 
+#metadata$hg.MDS2.jac <- hg.MDS.jac$MDS2 
+#stressplot(hg.mds.jaccard) 
+
+# Haplogroups - phylogenetic
+set.seed(201)
+hg.mds.uniuw.rar <- metaMDS(hg.uni.uw.rar, k=2, try=1000) # plot of MDS w/ weighted UniFrac dissimilarity matrix
+plot(hg.mds.uniuw.rar, type="t")
+stressplot(hg.mds.uniuw.rar)
+hg.MDS.uni.rar <- as.data.frame(hg.mds.uniuw.rar$points) # Use unweighted UniFrac output
+# Now you get unweighted UniFrac matrix values collapsed into 2 columns/variables
+metadata$hg.MDS1.uni.rar <- hg.MDS.uni.rar$MDS1 
+metadata$hg.MDS2.uni.rar <- hg.MDS.uni.rar$MDS2 
+```
+
+
+## BIRD NMDS
+```{R}
+# Birds - non phylogenetic
+# set.seed(201)
+#bird.mds.jaccard <- metaMDS(birdcomm.jaccard) # this plots NMDS of Jaccard dissimilarity matrix
+#plot(bird.mds.jaccard, type="t")
+#bird.MDS.jac <- as.data.frame(bird.mds.jaccard$points) # use Jaccard output
+# These NMDS values are essentially Jaccard matrix values collapsed into 2 columns/variables
+#metadata$bird.MDS1.jac <- bird.MDS.jac$MDS1 
+#metadata$bird.MDS2.jac <- bird.MDS.jac$MDS2 
+#stressplot(bird.mds.jaccard) 
+
+# Birds - phylogenetic
+# note: each time you do a random start your axes will flip becuase you're using a random purmutation each time
+set.seed(201)
+bird.mds.uniuw <- metaMDS(birdcomm.uni.uw, k=3, try=500) 
+# k=3 dimensions, increase trymax to account for low stress; note that stress stays relatively constant
+# by increasing trymax, you really only use time (this just increases number of random starts)
+plot(bird.mds.uniuw, type="t") 
+stressplot(bird.mds.uniuw) # big gaps in stress plot are due to to small number of sample sites 
+# option might be to use MDS, which works better for small sample sizes
+
+bird.MDS.uni <- as.data.frame(bird.mds.uniuw$points) # Use unweighted UniFrac output
+# Now you get unweighted UniFrac matrix values collapsed into 2 columns/variables
+metadata$bird.MDS1.uni <- bird.MDS.uni$MDS1 
+metadata$bird.MDS2.uni <- bird.MDS.uni$MDS2 
+
+
+## STICK THIS IN SUPPLEMENT FOR A REVIEWER; need to report stress on NMDS, you can use this to verify that CMD scale classic MDS checked out, clustering the same/similar 
+birdcmd <- cmdscale(birdcomm.uni.uw, k=2, eig=TRUE)
+summary(birdcmd)
+
+# classic cmdscale() plot that uses metric multidimensional scaling (MDS):
+birdcmd <- cmdscale(birdcomm.uni.uw)
+x <- birdcmd[, 1]
+y <- -birdcmd[, 2] # reflect so North is at the top
+## note asp = 1, to ensure Euclidean distances are represented correctly
+plot(x, y, type = "n", xlab = "MDS1", ylab = "MDS2", asp = 1, axes = TRUE,
+     main = "MDS - Birds")
+text(x, y, rownames(loc), cex = 0.6)
+
+
+autoplot((birdcmd), label=TRUE) # this is classic MDS and it's good that results are consistent w/ above 
+# likely better for small sample sizes 
+# although for some reason autoplot now isn't working...
+
+```
+
+Ara recommended that I try scaling data frame: metadata_scaled <- rescale(metadata), but this wasn't working, for some reason. Ended up not being necessary because procrustes rotates and scales. 
+
+
+---
+
+# BIRD AND PARASITE GENERALIZED DISSIMILARITY MODELING (GDM)
+
+**Code to install GDM from archive:** 
+Download package gdm from CRAN archive
+url <- "https://cran.r-project.org/src/contrib/Archive/gdm/gdm_1.3.8.tar.gz" # updated 3/13/18
+gdm <- "gdm_1.3.8.tar.gz"
+download.file(url = url, destfile = gdm)
+
+**Install package:** 
+install.packages(pkgs=gdm, type="source", repos=NULL)
+library(gdm)
+
+## Standardize predictor variables prior to including them in models
+```{r}
+# Nora's function for standardizing 
+# I added in customization to use Gelman 2008 method of 2SDs
+standardize <- function(x) {
+  mu <- mean(x, na.rm=TRUE)
+  sigma <- 2*sd(x, na.rm=TRUE)
+  y <- (x - mu)/sigma
+  return(y)
+}
+
+# If you do want to go this route, use this template: 
+#lat.z <- standardize(metadata$lat)
+#metadata$lat.z <- lat.z
+
+# Faster = 
+# Use scale() to standardize: 
+metadata$lat <- scale(metadata$lat)
+metadata$lon <- scale(metadata$lon)
+metadata$PC1_mean <- scale(metadata$PC1_mean)
+metadata$PC2_mean <- scale(metadata$PC2_mean)
+metadata$bird.MDS1.uni <- scale(metadata$bird.MDS1.uni)
+metadata$bird.MDS2.uni <- scale(metadata$bird.MDS2.uni)
+metadata$haplo.MDS1.uni.rar <- scale(metadata$haplo.MDS1.uni.rar)
+metadata$haplo.MDS2.uni.rar <- scale(metadata$haplo.MDS2.uni.rar)
+metadata$mean_elev <- scale(metadata$mean_elev)
+metadata$temp_annual <- scale(metadata$temp_annual)
+metadata$temp_var <- scale(metadata$temp_var)
+metadata$precip_annual <- scale(metadata$precip_annual)
+metadata$precip_var <- scale(metadata$precip_var)
+metadata$hg.MDS1.uni.rar <- scale(metadata$hg.MDS1.uni.rar)
+metadata$hg.MDS2.uni.rar <- scale(metadata$hg.MDS2.uni.rar)
+```
+
+
+
+# GDM: haplotype model 
+What predictors best explain parasite community turnover among mountain ranges?
+```{r Haplotype GDM setup}
+# GDM works on object created by formatsitepair; formatsitepair creates table of distances between all sites
+
+# FIT FULL MODEL 
+haplo.env <- metadata[,c(1, 8:10, 18:19, 28:29)] # Enviro predictor matrix: includes elev, keeps PC1 + PC2
+
+### GDM with elevation included (predictors: geog, elev, PC1, PC2, bird MDS1, bird MDS2) 
+haplo.gdm <- formatsitepair(haplo.gdm.biodata, # response var (biodata; site-by-site distance matrix)
+                            3, # biodata matrix format (3 = site-by-site distance/dissimilarity matrix)
+                            abundance=FALSE, # TRUE=abundance; false=presence/absence
+                            siteColumn="site", # name of col containing site codes/names. See help page. 
+                            XColumn="lat", 
+                            YColumn="lon", 
+                            predData=haplo.env, # enviro predictor data only predictors in model!
+                            weightType="equal") # defines weights for all sites (equal = equal weighting)
+set.seed(4010)
+haplo.gdm.sum <- gdm(haplo.gdm,geo=TRUE) # geo=true accounts for geo distance
+summary.gdm(haplo.gdm.sum)
+plot.gdm(haplo.gdm.sum, plot.layout=c(2,3))
+
+# Quantify model significance and variable importance 
+modhaplo <- gdm.varImp(haplo.gdm,geo=TRUE,parallel=TRUE,nPerm=100) 
+modhaplo
+
+
+## output of gdm.varImp
+# [[1]] = summarizes full model deviance, percent deviance explained by the full model,  p-val of  full model, and number of permutations used to calculate  statistics for each fitted model (i.e., the full model and each 
+# model 
+# with variables removed in succession during the backward elimination procedure if fullModelOnly=F)
+# [[2]] = Variable importance (measured as the percent change in deviance explained by the full model and the deviance explained by a model fit with that variable permuted.)
+# [[3]] = variable significance (sig estimated using the bootstrapped p-value when the variable has been permuted) 
+# [[4]] = number of permutations used to calculate  statistics for the model, provided because some GDMs may fail to 
+# fit for some permutations/variable combinations (helpful to know # permutations were used when calculating stats) 
+```
+
+
+# Haplotype: Visualize variable importance
+```{R}
+# visualize variable importance
+op <- par(mfrow = c(1,1),
+          pty = "s",mgp=c(2,1,0)) 
+barplot(sort(modhaplo[[2]][,1],decreasing=T), col=c("tan4", "tan1", "tan3"), # full model 
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+barplot(sort(modhaplo[[2]][,2],decreasing=T), col=c("tan4", "tan1", "tan3"), # fullmodel-1
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+barplot(sort(modhaplo[[2]][,3],decreasing=T), col=c("tan4", "tan1", "tan3"), # fullmodel-2; BEST MODEL 
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+barplot(sort(modhaplo[[2]][,4],decreasing=T), col=c("tan4", "tan1", "tan3"), # fullmodel-3
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+barplot(sort(modhaplo[[2]][,5],decreasing=T), col=c("tan4", "tan1", "tan3"), # fullmodel-4
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+
+## Top variable importance model/plot (fullmodel-2; BEST MODEL): 
+op <- par(mfrow = c(1,1),
+          pty = "s",mgp=c(2.5,1,0))
+barplot(sort(modhaplo[[2]][,3],decreasing=T), col=c("magenta3", "blue", "snow4", "olivedrab3"), cex.names=0.8, las=2, names.arg=c("Elevation", "Bird MDS2", "Geographic\n Distance", "Seasonality\n Index"), ylab="Variable Importance %") 
+
+## Full model variable importance plot - FOR PAPER 
+barplot(sort(modhaplo[[2]][,1],decreasing=T), col=c("blue", "magenta3", "snow4", "olivedrab3", "red", "yellow"), cex.names=0.8, las=2, names.arg=c("Bird MDS2", "Elevation", "Geographic\n Distance", "Seasonality\n Index", "Temperature-\nAridity Index", "Bird MDS1"), ylab="Variable Importance (%)")  
+
+```
+
+
+# HAPLOTYPE: Compositional dissimilarity  plot
+```{r}
+  ##plots the second compositional dissimilarity spline plot
+  plot(haplo.gdm.sum$predicted, haplo.gdm.sum$observed, xlab="Predicted Community Dissimilarity", ylab="Observed Community Dissimilarity", type="n", ylim=c(0,1), las=1)
+  points(haplo.gdm.sum$predicted, haplo.gdm.sum$observed, pch=20, cex=0.25, col="blue")
+  overlayX <- overlayY <- (seq(from=min(haplo.gdm.sum$predicted), to=max(haplo.gdm.sum$predicted), length=2))
+  lines(overlayX, overlayY, lwd=2) 
+```
+
+
+# GDM HAPLOTYPE SPLINE PLOT 
+## Extract splines, prep for spline plot 
+```{r}
+# The I-splines provide an indication of how species composition (or other biological measure) changes along each 
+# environmental gradient. 
+length(haplo.gdm.sum$predictors) # gives # of predictors 
+plot(haplo.gdm.sum, plot.layout=c(3,3)) # first two plots are what Glassman et al. 2017 has in their paper 
+
+# Get x,y spline values from GDM (as Ian recommended)
+haplo.splines <- isplineExtract(haplo.gdm.sum) # type=list of x and y values
+# x vals are actual values of predictors of l-splines
+# y vals are partial ecological distances of fitted l-splines 
+str(haplo.splines)
+
+# KEEP THIS TEMPLATE FORMATTING FOR PLOTTING INDIVIDUAL SPLINES 
+plot(haplo.splines$x[,"mean_elev"], haplo.splines$y[,"mean_elev"], lwd=3, type="l", xlab="Elevation", ylab="Partial ecological distance")  
+
+plot(haplo.splines$x[,"PC2_mean"], haplo.splines$y[,"PC2_mean"], lwd=3, type="l", xlab="PC2", ylab="Partial ecological distance") 
+
+plot(haplo.splines$x[,"bird.MDS1.uni"], haplo.splines$y[,"bird.MDS1.uni"], lwd=3, type="l", xlab="Bird MDS1", ylab="Partial ecological distance")
+
+plot(haplo.splines$x[,"bird.MDS2.uni"], haplo.splines$y[,"bird.MDS2.uni"], lwd=3, type="l", xlab="Bird MDS2", ylab="Partial ecological distance")
+
+plot(haplo.splines$x[,"Geographic"], haplo.splines$y[,"Geographic"], lwd=3, type="l", xlab="Geographic Distance", ylab="Partial ecological distance")
+
+plot(haplo.splines$x[,"PC1_mean"], haplo.splines$y[,"PC1_mean"], lwd=3, type="l", xlab="Temperature-Aridity Index", ylab="Partial ecological distance")
+
+# plotUncertainty(haplo.gdm3, sampleSites=1, bsIters=100, geo=FALSE, splines=NULL, knots=NULL, 
+                #splineCol="blue", errCol="black", plot.linewidth=2.0,
+                # parallel=FALSE, cores=1)
+# this is supposed to help me plot error bars, but it isn't working.
+```
+
+
+## HAPLOTYPE SPLINE PLOT 
+```{r}
+## **made for export as a 450 W x 500 H figure for paper
+
+# Need to include las=1 in each line to properly rotate axis labels
+# only need mgp() in top line to move labels from axes 
+
+# SPLINE PLOT 
+plot(haplo.splines$x[,"mean_elev"], haplo.splines$y[,"mean_elev"], lwd=3, type="l", xlab="Predictor Dissimilarity", ylab="Community Dissimilarity", xlim=c(-1.9,3.4), ylim=c(0.0,0.42), las=1, col="magenta3")
+par(new=TRUE)
+plot(haplo.splines$x[,"bird.MDS2.uni"], haplo.splines$y[,"bird.MDS2.uni"], lwd=3, type="l", xlab=" ", ylab=" ", xlim=c(-1.9,3.4), ylim=c(0.0,0.42), las=1, col="blue")  
+par(new=TRUE)
+plot(haplo.splines$x[,"PC2_mean"], haplo.splines$y[,"PC2_mean"], lwd=3, type="l", xlab=" ", ylab=" ", xlim=c(-1.9,3.4), ylim=c(0.0,0.42), las=1, col="olivedrab3") 
+par(new=TRUE)
+plot(haplo.splines$x[,"Geographic"], haplo.splines$y[,"Geographic"], lwd=3, type="l", las=1, col="snow4", xlab=" ", ylab=" ", xlim=c(-1.9,3.4), ylim=c(0.0,0.42)) 
+# title(main="Variables Associated with Parasite Beta-diversity", font.main=1,cex=1.25)
+text(1.97,0.407, "Elevation", cex=1.0, col="black")
+text(1.6,0.33, "Bird MDS2", cex=1.0, col="black")
+text(2.75,0.08, "Geographic\n Distance", cex=1.0, col="black")
+text(0.5,0.055, "Seasonality\n Index", cex=1.0, col="black")
+
+### need to figure out a way not to label up on xlim and ylim 3 times so they get super bold  
+```
+
+
+
+# BIRD GDM
+```{R}
+
+bird.env <- metadata[,c(1, 8:10, 18:19, 24:25)] # site, lat, lon, elev, PC1, PC2, haplo MDS1, haplo MDS2
+
+### FULL MODEL (predictors: geog, elev, PC1, PC2, bird MDS1, bird MDS2) 
+bird.gdm <- formatsitepair(bird.gdm.biodata, 
+                            3, 
+                            abundance=FALSE, 
+                            siteColumn="site",  
+                            XColumn="lat", 
+                            YColumn="lon", 
+                            predData=bird.env, 
+                            weightType="equal") 
+bird.gdm.sum <- gdm(bird.gdm,geo=TRUE) # geo=true accounts for geo distance
+summary.gdm(bird.gdm.sum)
+plot(bird.gdm.sum, plot.layout=c(3,3))
+
+# Quantify model significance and variable importance 
+modbird <- gdm.varImp(bird.gdm,geo=TRUE,parallel=TRUE,nPerm=100) 
+modbird
+
+## output of gdm.varImp
+# [[1]] = summarizes full model deviance, percent deviance explained by the full model,  p-val of  full model, and  
+# number of permutations used to calculate  statistics for each fitted model (i.e., the full model and each # model 
+# with variables removed in succession during the backward elimination procedure if fullModelOnly=F)
+# [[2]] = Variable importance (measured as the percent change in deviance explained by the full model and the deviance 
+# explained by a model fit with that variable permuted.)
+# [[3]] = variable significance (sig estimated using the bootstrapped p-value when the variable has been permuted) 
+# [[4]] = number of permutations used to calculate  statistics for the model, provided because some GDMs may fail to 
+# fit for some permutations/variable combinations (helpful to know # permutations were used when calculating stats) 
+```
+
+
+# BIRDS: plot variable importance
+```{r}
+# visualize variable importance
+op <- par(mfrow = c(1,1),
+          pty = "s",mgp=c(2,1,0)) 
+barplot(sort(modbird[[2]][,1],decreasing=T), col=c("tan4", "tan1", "tan3"), # full model 
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+barplot(sort(modbird[[2]][,2],decreasing=T), col=c("tan4", "tan1", "tan3"), # fullmodel-1; BEST MODEL
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+barplot(sort(modbird[[2]][,3],decreasing=T), col=c("tan4", "tan1", "tan3"), # fullmodel-2 
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+barplot(sort(modbird[[2]][,4],decreasing=T), col=c("tan4", "tan1", "tan3"), # fullmodel-3
+        cex.names=0.8, las=2, ylab="Variable Importance") 
+
+# Full model variable importance plot - FOR PAPER: 
+barplot(sort(modbird[[2]][,1],decreasing=T), col=c("magenta3", "snow4", "cornflowerblue", "olivedrab3", "springgreen3", "orange1"), cex.names=0.8, las=2, ylab="Variable Importance (%)", names.arg=c("Elevation","Geographic\n Distance", "Parasite\n MDS2", "Seasonality\n Index", "Temperature-\naridity Index", "Parasite\n MDS1")) 
+
+## Top variable importance model/plot (Full model-1): 
+op <- par(mfrow = c(1,1),
+          pty = "s",mgp=c(2,0.5,0)) 
+barplot(sort(modbird[[2]][,2],decreasing=T), col=c("magenta3", "cornflowerblue", "snow4", "orange1", "springgreen3"), cex.names=0.8, las=2, ylab="Variable Importance %", names.arg=c("Elevation","Parasite\n MDS2","Geographic\n Distance",  "Parasite\n MDS1", "Temperature-\naridity Index")) 
+
+```
+
+
+# BIRDS: Compositional dissimilarity plot
+```{r}
+  ##plots the second compositional dissimilarity spline plot
+  plot(bird.gdm.sum$predicted, bird.gdm.sum$observed, xlab="Predicted Community Dissimilarity", ylab="Observed Community Dissimilarity", type="n", ylim=c(0,1), las=1)
+  points(bird.gdm.sum$predicted, bird.gdm.sum$observed, pch=20, cex=0.25, col="blue")
+  overlayX <- overlayY <- (seq(from=min(bird.gdm.sum$predicted), to=max(bird.gdm.sum$predicted), length=2))
+  lines(overlayX, overlayY, lwd=2) 
+```
+
+
+# GDM BIRD SPLINE PLOT 
+## Extract splines, prep for spline plot 
+```{r}
+### SPLINE PLOT
+# The I-splines provide an indication of how species composition (or other biological measure) changes along each 
+# environmental gradient. 
+
+length(bird.gdm.sum$predictors) # gives # of predictors 
+plot(bird.gdm.sum, plot.layout=c(3,3)) # first two plots are what Glassman et al. 2017 has in their paper 
+
+# Get x,y spline values from GDM 
+bird.splines <- isplineExtract(bird.gdm.sum) # type=list of x and y values
+# x vals are actual values of predictors of l-splines
+# y vals are partial ecological distances of fitted l-splines 
+str(bird.splines)
+
+# INDIVIDUAL SPLINES 
+## to figure out how to make big plot, above 
+plot(bird.splines$x[,"mean_elev"], bird.splines$y[,"mean_elev"], lwd=3, type="l", xlab="Elevation", ylab="Partial ecological distance") 
+
+plot(bird.splines$x[,"Geographic"], bird.splines$y[,"Geographic"], lwd=3, type="l", xlab="Geographic Distance", ylab="Partial ecological distance") 
+
+plot(bird.splines$x[,"haplo.MDS2.uni.rar"], bird.splines$y[,"haplo.MDS2.uni.rar"], lwd=3, type="l", xlab="PC2", ylab="Partial ecological distance") 
+```
+
+
+# BIRD SPLINE PLOT 
+```{r}
+## **formatted for export as 450W x 500 H .png file for paper figure
+
+# Need to include las=1 in each line to properly rotate axis labels
+# only need mgp() in top line to move labels from axes 
+
+plot(bird.splines$x[,"mean_elev"], bird.splines$y[,"mean_elev"], lwd=3, type="l", xlab="Predictor Dissimilarity", ylab="Community Dissimilarity", xlim=c(-1.6,3.5), ylim=c(0.0,0.125), las=1, mgp=c(3,1,0), col="magenta3")
+par(new=TRUE)
+plot(bird.splines$x[,"haplo.MDS2.uni.rar"], bird.splines$y[,"haplo.MDS2.uni.rar"], lwd=3, type="l", xlab=" ", ylab=" ", xlim=c(-1.6,3.5), ylim=c(0.0,0.125), las=1, col="cornflowerblue") 
+par(new=TRUE)
+plot(bird.splines$x[,"Geographic"], bird.splines$y[,"Geographic"], lwd=3, type="l", xlab=" ", ylab=" ", xlim=c(-1.6,3.5), ylim=c(0.0,0.125), las=1, col="snow4") 
+par(new=TRUE)
+plot(bird.splines$x[,"PC2_mean"], bird.splines$y[,"PC2_mean"], lwd=3, type="l", xlab=" ", ylab=" ", xlim=c(-1.6,3.5), ylim=c(0.0,0.125), las=1, col="olivedrab3") 
+# title(main="Variables Associated with Bird Beta-diversity", font.main=1,cex=1.25)
+text(1.95,0.12, "Elevation", cex=1.0, col="black")
+text(2.1,0.015, "Parasite\n MDS2", cex=1.0, col="black")
+text(2.9,0.040, "Geographic\n Distance", cex=1.0, col="black")
+# text(1.4,0.039, "Seasonality\n Index", cex=1.0, col="black")
+text(-0.8,0.015, "Seasonality\n Index", cex=1.0, col="black")
+```
+
+
+
+###############################
+PLOTS FOR GRAPHICAL ABSTRACT 
+```{r}
+# use labels=FALSE to remove axis labels and yaxt and xaxt arguments to remove tick marks 
+
+# I think these are all 500 W x 500 H and just resized manually?
+
+# Variable importance plot
+barplot(sort(modhaplo[[2]][,1],decreasing=T), col=c("blue", "magenta3", "snow4", "olivedrab3", "red", "yellow"), cex.names=0.8, las=2, names.arg=c(" ", " ", " ", " ", " ", " "), ylab=" ", labels=FALSE, yaxt="n", xaxt="n")  
+
+# HEX codes: 
+# magenta3: #CD00CD 
+# blue: #0000FF
+# olivedrab3: #9ACD32
+# orangered3: #CD3700
+# snow4: #8B8989
+
+# Compositional dissimilarity plot 
+  plot(haplo.gdm.sum$predicted, haplo.gdm.sum$observed, xlab=" ", ylab=" ", type="n", ylim=c(0,1), labels=FALSE, yaxt="n", xaxt="n")
+  points(haplo.gdm.sum$predicted, haplo.gdm.sum$observed, pch=20, cex=0.25, col="blue")
+  overlayX <- overlayY <- (seq(from=min(haplo.gdm.sum$predicted), to=max(haplo.gdm.sum$predicted), length=2))
+  lines(overlayX, overlayY, lwd=2) 
+
+
+# parasite spline plot 
+plot(haplo.splines$x[,"mean_elev"], haplo.splines$y[,"mean_elev"], lwd=5, type="l", xlab=" ", ylab=" ", xlim=c(-1.9,3.5), ylim=c(0.0,0.42), col="magenta3", labels=FALSE, yaxt="n", xaxt="n") 
+par(new=TRUE)
+plot(haplo.splines$x[,"bird.MDS2.uni"], haplo.splines$y[,"bird.MDS2.uni"], lwd=5, type="l", xlab=" ", ylab=" ", xlim=c(-1.9,3.5), ylim=c(0.0,0.42), col="blue", labels=FALSE, yaxt="n", xaxt="n")  
+par(new=TRUE)
+plot(haplo.splines$x[,"PC2_mean"], haplo.splines$y[,"PC2_mean"], lwd=5, type="l", xlab=" ", ylab=" ", xlim=c(-1.9,3.5), ylim=c(0.0,0.44), col="olivedrab3", labels=FALSE, yaxt="n", xaxt="n") 
+par(new=TRUE)
+plot(haplo.splines$x[,"Geographic"], haplo.splines$y[,"Geographic"], lwd=5, type="l", col="snow4", xlab=" ", ylab=" ", xlim=c(-2.0,3.5), ylim=c(0.0,0.4), labels=FALSE, yaxt="n", xaxt="n") 
+
+```
+
+
+**See YRWA CUT for GDM haplogroup model code 
+
+
+######### END #############
+
