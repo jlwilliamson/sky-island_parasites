@@ -1,0 +1,1281 @@
+---
+title: "YRWA working script - Initial through prevalence modeling"
+author: "Jessie Williamson"
+date: "07/06/2017 (code last revised); 10/31/20 (formatting last revised for Git upload)" 
+output:
+  html_document:
+    toc: true
+---
+
+######
+
+One of several .rmd files associated with Williamson et al. 2019 "Community composition of sky-island parasites in Audubon's Warblers", International Journal for Parasitology: 10.1016/j.ijpara.2018.11.012. 
+
+Script includes data import and wrangling, transformations, PCA analyses, and infection modeling. 
+
+Code originally written as a .Rmd in 2017-2019 but cleaned up a bit for GitHub upload on 10/31/20. 
+
+
+#####
+
+<!---
+## IGNORE THIS
+# Erik's compile commands in R:
+  fn.this <- "YRWA_script.Rmd"
+  setwd("~/Desktop/Rdirectory/ADA2/Poster")
+  library(knitr)
+  knitr::purl(fn.this)
+  rmarkdown::render(fn.this)
+#
+# In case you're curious about what the code above does:
+# The purl()   command strips out all the code chunks and writes them to an *.R file
+# The render() command does the same as the "Knit HTML" button,
+#   but all the variables are created in the console.
+# I use these commands because I use a different text editor than RStudio.
+## IGNORE THIS
+-->
+
+
+```{R, echo=FALSE}
+# I set some GLOBAL R chunk options here.
+#   (to hide this message add "echo=FALSE" to the code chunk options)
+
+knitr::opts_chunk$set(comment = NA, message = FALSE, warning = FALSE, width = 100)
+knitr::opts_chunk$set(fig.align = "center", fig.height = 4, fig.width = 6)
+
+#knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+```
+
+---
+
+# Set WD
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/Dropbox (MSBbirds)/Rdirectory/YRWA_Malaria")
+```
+
+
+# Load packages
+```{R}
+# graph packages - Run these first 
+library(reshape)
+library(car)
+library(GGally)
+library(Hmisc)
+library(gridExtra)
+library(stats)
+library(gplots)
+library(ggplot2)
+library(lsmeans)
+library(effects)
+library(plyr)
+library(dplyr)
+library(gridExtra)
+library(lattice)
+library(survival)
+library(AICcmodavg)
+library(MuMIn)
+library(stats4) # Knitr stopped working and asked me to add this 
+library(PMCMR) #Allows Kruskal-Wallis post-hocs
+library(fmsb)
+library(faraway)
+library(reshape2)
+library(popbio)
+library(arm)
+library(ggfortify) # PCA
+library(adegenet)
+library(cluster)
+library(plyr)
+library(ape)
+```
+
+# Load in data
+```{R}
+# As of 06 June 2017, this dataset is final and includes all PCA values
+# NOTE: in `mal.bird` each row is a single bird
+# Second note: Jessie sorted by NK and collapsed Cole's WorldClim and yrwa working data sets (required for PCA)
+# This version includes all 19 BioClim variables, as well as a column called "forPCA", used for sorting for PCA
+mal.bird <- read.csv("/Users/Jessie/Dropbox (MSBbirds)/Rdirectory/YRWA_Malaria/yrwa_working_08july2017.csv")
+
+# Make all variables that should appear as factors appear as factors: 
+mal.bird$siteID <- as.factor(mal.bird$siteID)
+mal.bird$malYN <- as.factor(mal.bird$malYN)
+mal.bird$hYN <- as.factor(mal.bird$hYN) # These are for logistic models
+mal.bird$pYN <- as.factor(mal.bird$pYN)
+mal.bird$lYN <- as.factor(mal.bird$lYN)
+mal.bird$haplogroup1 <- as.factor(mal.bird$haplogroup1)
+mal.bird$haplogroup2 <- as.factor(mal.bird$haplogroup2)
+mal.bird$haplogroup3 <- as.factor(mal.bird$haplogroup3)
+mal.bird$haplogroup4 <- as.factor(mal.bird$haplogroup4)
+
+str(mal.bird)
+summary(mal.bird)
+```
+
+For separate "PCA values" dataset (old name: mal.bird2), see YRWA_Script_CUT
+
+
+WORLDCLIM CODEBOOK 
+```
+
+They are coded as follows:
+
+BIO1 = Annual Mean Temperature
+BIO2 = Mean Diurnal Range (Mean of monthly (max temp - min temp))
+BIO3 = Isothermality (BIO2/BIO7) (* 100)
+BIO4 = Temperature Seasonality (standard deviation *100)
+BIO5 = Max Temperature of Warmest Month
+BIO6 = Min Temperature of Coldest Month
+BIO7 = Temperature Annual Range (BIO5-BIO6)
+BIO8 = Mean Temperature of Wettest Quarter
+BIO9 = Mean Temperature of Driest Quarter (*transformed)
+BIO10 = Mean Temperature of Warmest Quarter
+BIO11 = Mean Temperature of Coldest Quarter
+BIO12 = Annual Precipitation
+BIO13 = Precipitation of Wettest Month
+BIO14 = Precipitation of Driest Month (*transformed)
+BIO15 = Precipitation Seasonality (Coefficient of Variation)
+BIO16 = Precipitation of Wettest Quarter
+BIO17 = Precipitation of Driest Quarter (*transformed)
+BIO18 = Precipitation of Warmest Quarter
+BIO19 = Precipitation of Coldest Quarter
+
+```
+
+NOTE: ALL SINGLE-VARIABLE TESTS INVOLVING ENVIRO. VARIABLES HAVE BEEN MOVED TO YRWA_SCRIPT_CUT. 
+
+# Transform predictors
+```{R}
+# Relative heart is super left-skewed; must find appropriate transformation
+# Box-Cox doesn't work because rel.heart has negative values and Box-Cox requires positive response var. values
+# log, sqrt, and arcsine don' work - data shape remains extremely left-skewed
+
+# This looks a lot better - data shape looks nearly normal
+mal.bird$cube.rel.heart <- (mal.bird$rel.heart)^3
+hist(mal.bird$cube.rel.heart)
+```
+
+
+# Predictor scatterplot matrix
+Predictors for models: site (include in all models), mass, relative heart mass, elevation, PC1, PC2, Latitude 
+Sex and age aren't significant in Chi-square tests; don't include in models
+```{R, fig.height = 6, fig.width = 6}
+# relationships between predictors
+
+library(ggplot2)
+library(GGally)
+# Run this plot with log-transformed variables
+p <- ggpairs(subset(mal.bird, select = c(site, elev, mass, cube.rel.heart, mal.count)))
+print(p)
+# subset template: p <- ggpairs(subset(gal, select = c(Area, Elevation, Nearest, StCruz, Adjacent)))
+```
+
+# Out of curiosity, mass vs. Relative Heart mass (transformed):
+```{R}
+library(ggplot2)
+p4 <- ggplot(mal.bird, aes(x = mass, y = cube.rel.heart))
+p4 <- p4 + geom_jitter(position = position_jitter(width = 0.1), alpha = 1/4)
+p4 <- p4 + stat_smooth(method = lm)
+p4 <- p4 + labs(title = "Mass vs. Relative Heart^3")
+print(p4)
+```
+
+# Out of curiosity, rel.heart vs. mal.count:
+```{R}
+# very significant relationship between mal.count (# haplotypes a bird has) and heart mass
+lm1 <- lm(cube.rel.heart ~ mal.count, data = mal.bird)
+summary(lm1)
+
+## Needs a box plot
+library(ggplot2)
+p5 <- ggplot(mal.bird, aes(x = mal.count, y = rel.heart))
+p5 <- p5 + geom_jitter(position = position_jitter(width = 0.1), alpha = 1/4)
+p5 <- p5 + stat_smooth(method = lm)
+p5 <- p5 + labs(title = "Mass vs. Relative Heart^3")
+print(p5)
+```
+
+# Plot of malYN by site
+```{R}
+library(ggplot2)
+p7 <- ggplot(data = mal.bird, aes(x = site, fill=malYN))
+# p7 <- p7 + facet_grid(. ~ family) # I don't want to facet this plot at all
+p7 <- p7 + geom_bar(position=position_dodge())
+p7 <- p7 + labs(x = "Site", y = "Number of Infections")
+p7 <- p7 + theme_bw()
+# Use this line to change graph colors; and leave the legend blank (`name = " "`)
+p7 <- p7 + scale_fill_manual(name="", values=c("#454545","#999999"))
+p7 <- p7 + theme(plot.background = element_blank())
+p7 <- p7 + theme(panel.grid.major = element_blank())
+p7 <- p7 + theme(panel.grid.minor = element_blank())
+p7 <- p7 + theme(panel.background = element_blank())
+print(p7)
+
+# Figure out how to change legend labels!
+# Maybe re-order/re-level yes/no so yes appears first (as you did with La Selva data/graphs)
+
+```
+
+
+
+# One-way tests of sex and age 
+
+## Sex v. malYN: Chi-square 
+No significant differences among sexes and whether or not birds have malaria. Don't include this in the model. 
+```{R}
+# Hypothesis (null): Sex and whether or not birds have malaria are NOT associated with one another.
+ 
+#Steps to running chi-square in R: 
+# Begin by making a contingency table 
+table(mal.bird$sex, mal.bird$malYN)
+#Each count represents the joint occurrence of sex and whether or not birds have malaria 
+# Run chi-square test with the above calculated contingency table 
+chisq.test(table(mal.bird$sex, mal.bird$malYN))
+# NOTE: this result returns a warbing message: "Chi-squared approximation may be incorrect"
+# The Youtube tutorial I watched said to ignore the warning message 
+# This tutorial is really good and simple: https://www.youtube.com/watch?v=LnaeG0MzQVw
+
+# The above line of code, appended with "$expected" returns a frequency table with expected values that would be 
+# true under the null hypothesis (sex and whether birds have malaria are not associated).
+chisq.test(table(mal.bird$sex, mal.bird$malYN))$expected 
+
+# NOTE: You can also assign a particular table to a variable, so you can print it more easily 
+```
+
+## Sex v. hYN: Chi-square 
+Not sig (p = 0.06). Exclude sex from H models. 
+```{R}
+# Hypothesis (null): Sex and whether or not birds have H are NOT associated with one another.
+ 
+#Steps to running chi-square in R: 
+# Begin by making a contingency table, assign to a variable for easier manipulation
+sex.hYN.table <- table(mal.bird$sex, mal.bird$hYN)
+sex.hYN.table
+#Each count represents the joint occurrence of sex and whether or not birds have malaria 
+# Run chi-square test with the above calculated contingency table 
+
+chisq.test(sex.hYN.table)
+
+# The above line of code, appended with "$expected" returns a frequency table with expected values that would be 
+# true under the null hypothesis (sex and whether birds have malaria are not associated).
+chisq.test(sex.hYN.table)$expected 
+```
+
+
+## Sex v. pYN: Chi-square 
+Not sig (p = 0.47). Exclude sex from P models. 
+```{R}
+# Hypothesis (null): Sex and whether or not birds have P are NOT associated with one another.
+ 
+#Steps to running chi-square in R: 
+# Begin by making a contingency table, assign to a variable for easier manipulation
+sex.pYN.table <- table(mal.bird$sex, mal.bird$pYN)
+sex.pYN.table
+#Each count represents the joint occurrence of sex and whether or not birds have malaria 
+# Run chi-square test with the above calculated contingency table 
+
+chisq.test(sex.pYN.table)
+
+# The above line of code, appended with "$expected" returns a frequency table with expected values that would be 
+# true under the null hypothesis (sex and whether birds have malaria are not associated).
+chisq.test(sex.pYN.table)$expected 
+```
+
+
+## Sex v. lYN: Chi-square 
+Not sig (p = 0.48). Exclude sex from L models. 
+```{R}
+# Hypothesis (null): Sex and whether or not birds have L are NOT associated with one another.
+ 
+#Steps to running chi-square in R: 
+# Begin by making a contingency table, assign to a variable for easier manipulation
+sex.lYN.table <- table(mal.bird$sex, mal.bird$lYN)
+sex.lYN.table
+#Each count represents the joint occurrence of sex and whether or not birds have malaria 
+# Run chi-square test with the above calculated contingency table 
+
+chisq.test(sex.lYN.table)
+
+# The above line of code, appended with "$expected" returns a frequency table with expected values that would be 
+# true under the null hypothesis (sex and whether birds have malaria are not associated).
+chisq.test(sex.lYN.table)$expected 
+```
+
+
+## Age v. malYN: Chi-square 
+Not sig (p = 0.32). Exclude age from malYN models. 
+```{R}
+# Hypothesis (null): Age and whether or not birds have malaria are NOT associated with one another.
+ 
+#Steps to running chi-square in R: 
+# Begin by making a contingency table, assign to a variable for easier manipulation
+age.malYN.table <- table(mal.bird$age, mal.bird$malYN)
+age.malYN.table
+#Each count represents the joint occurrence of sex and whether or not birds have malaria 
+# Run chi-square test with the above calculated contingency table 
+
+chisq.test(age.malYN.table)
+
+# The above line of code, appended with "$expected" returns a frequency table with expected values that would be 
+# true under the null hypothesis (sex and whether birds have malaria are not associated).
+chisq.test(age.malYN.table)$expected 
+```
+
+
+## Age v. hYN: Chi-square 
+Not sig (p = 0.33). Exclude age from H models. 
+```{R}
+# Hypothesis (null): Age and whether or not birds have H are NOT associated with one another.
+ 
+#Steps to running chi-square in R: 
+# Begin by making a contingency table, assign to a variable for easier manipulation
+age.hYN.table <- table(mal.bird$age, mal.bird$hYN)
+age.hYN.table
+#Each count represents the joint occurrence of sex and whether or not birds have malaria 
+# Run chi-square test with the above calculated contingency table 
+
+chisq.test(age.hYN.table)
+
+# The above line of code, appended with "$expected" returns a frequency table with expected values that would be 
+# true under the null hypothesis (sex and whether birds have malaria are not associated).
+chisq.test(age.hYN.table)$expected 
+```
+
+
+## Age v. pYN: Chi-square 
+Not sig (p = 0.70). Exclude age from P models. 
+```{R}
+# Hypothesis (null): Age and whether or not birds have H are NOT associated with one another.
+ 
+#Steps to running chi-square in R: 
+# Begin by making a contingency table, assign to a variable for easier manipulation
+age.pYN.table <- table(mal.bird$age, mal.bird$pYN)
+age.pYN.table
+#Each count represents the joint occurrence of sex and whether or not birds have malaria 
+# Run chi-square test with the above calculated contingency table 
+
+chisq.test(age.pYN.table)
+
+# The above line of code, appended with "$expected" returns a frequency table with expected values that would be 
+# true under the null hypothesis (sex and whether birds have malaria are not associated).
+chisq.test(age.pYN.table)$expected 
+```
+
+## Age v. lYN: Chi-square 
+Not sig (p = 0.36). Exclude age from L models. 
+```{R}
+# Hypothesis (null): Age and whether or not birds have L are NOT associated with one another.
+ 
+#Steps to running chi-square in R: 
+# Begin by making a contingency table, assign to a variable for easier manipulation
+age.lYN.table <- table(mal.bird$age, mal.bird$lYN)
+age.lYN.table
+#Each count represents the joint occurrence of sex and whether or not birds have malaria 
+# Run chi-square test with the above calculated contingency table 
+
+chisq.test(age.lYN.table)
+
+# The above line of code, appended with "$expected" returns a frequency table with expected values that would be 
+# true under the null hypothesis (sex and whether birds have malaria are not associated).
+chisq.test(age.lYN.table)$expected 
+```
+
+```{R}
+# Lisa infection rate test
+table(mal.bird$sex, mal.bird$mal.count) # generate table of # haplotype infections per sex
+chisq.test(table(mal.bird$sex, mal.bird$mal.count))$expected #get expected counts for each # haplotypes 
+# This checks out with what I know from this dataset, which is that expected shouldn't differ much from
+# observed; results not sig - this might work
+```
+
+
+
+# PCA - ENVIRO VARIABLES 
+
+## Create a list of BioClim variables from mal.bird:
+```{R}
+# Sort descending by NK to make sure everything is in order before sorting for PCA
+mal.bird <- mal.bird[order(mal.bird$nk, decreasing = FALSE),] # sets smallest NK first (ascending order)
+mal.bird # View the data frame after sorting to make sure everything appears to be in order
+
+# Before doing anything, sort DESCENDING by the variable 'forPCA' to make sure everything is ordered properly
+# Default sort is ascending; make sure to indicate decreasing sort 
+# NOTE: Must save over the original dataframe after sorting, or this won't work properly
+mal.bird <- mal.bird[order(mal.bird$ForPCA, decreasing = TRUE),] 
+mal.bird # View the data frame after sorting to make sure everything appears to be in order 
+
+# Extract only the bioclim variables and representative sites (certain # rows): 
+bioclim.vars <- mal.bird[1:77, 36:54] # Create subset. 
+# Now, set NKs as row names so you can retain IDs of dataset
+rownames(bioclim.vars) <- c("130520", "130885", "142023", "218326", "218327", "218342", "218344", "218347", "218373", "218381", "218383", "218384", "218385", "218386", "218387", "218391", "218458", "221881", "221891", "221897", "222281", "222284", "222285", "222286", "222287", "222288", "222290", "222292", "222293", "222294", "222299", "222300", "222301", "222304", "222305", "222307", "222308", "222310", "222314", "222316", "222317", "222401", "222403", "222405", "222406", "222411", "222412", "222416", "222419", "222420", "222423", "222424", "222427", "222430", "222432", "222433", "222435", "222439", "222440", "222442", "222445", "222449", "222451", "222452", "222454", "222455", "222457", "222458", "222460", "222462", "222474", "222477", "222491", "222492", "222493", "275803", "276076")
+# The above line of code is saying "take rows 1-77 and columns 36-54" (aka, all BioClim vars)
+# Format is: [rows, columns]
+head(bioclim.vars[, 1:6]) #view the first 6 lines of the data to make sure it looks right
+```
+
+
+#Scatterplot matrix of WorldClim data: 
+```{R, fig.height = 8, fig.width = 8}
+library(ggplot2)
+library(GGally)
+p <- ggpairs(bioclim.vars) # pull the var list from above to get all vars in matrix
+print(p)
+# It looks like bio9_12 and bio14_12 need transformation. Bio17_12 might need transformation. 
+```
+
+# Transform BioClim variables
+```{R}
+# BioClim variable Transformations:
+#Bio9_12
+mal.bird$cubebio9_12 <- (mal.bird$bio9_12)^3
+hist(mal.bird$cubebio9_12)
+
+# Bio14_12
+# log works better than sqrt
+mal.bird$logbio14_12 <- log(mal.bird$bio14_12)
+hist(mal.bird$logbio14_12)
+
+# Bio17_12
+mal.bird$logbio17_12 <- log(mal.bird$bio17_12)
+hist(mal.bird$logbio17_12)
+```
+
+# Subset scatterplot matrix of transformed Bioclim vars 
+```{R}
+library(ggplot2)
+library(GGally)
+p <- ggpairs(subset(mal.bird, select = c(cubebio9_12, logbio14_12, logbio17_12)))
+# subset template: p <- ggpairs(subset(gal, select = c(Area, Elevation, Nearest, StCruz, Adjacent)))
+print(p)
+```
+
+
+
+# Create a subset of BioClim vars for PCA
+Need to to this (vs. using bioclim.vars above) because you don't want original 3 bioclim variables that you transformed above (e.g. you want transformed variables, so in this subset, you'll just select what you want)
+```{R}
+# Now, create a subset of appropriate sites and BioClim variables (combo of original and transformed)
+pca.varlist <- mal.bird[1:77, c(36:43, 45:48, 50:51, 53:54, 57:59)] # Concatenates range of columns.
+
+# set NKs at rownames to you can retain IDs of rows
+rownames(pca.varlist) <- c("130520", "130885", "142023", "218326", "218327", "218342", "218344", "218347", "218373", "218381", "218383", "218384", "218385", "218386", "218387", "218391", "218458", "221881", "221891", "221897", "222281", "222284", "222285", "222286", "222287", "222288", "222290", "222292", "222293", "222294", "222299", "222300", "222301", "222304", "222305", "222307", "222308", "222310", "222314", "222316", "222317", "222401", "222403", "222405", "222406", "222411", "222412", "222416", "222419", "222420", "222423", "222424", "222427", "222430", "222432", "222433", "222435", "222439", "222440", "222442", "222445", "222449", "222451", "222452", "222454", "222455", "222457", "222458", "222460", "222462", "222474", "222477", "222491", "222492", "222493", "275803", "276076")
+# Takes first 77 rows (discrete sites) and all BioClim variables (original and transformed)
+head(pca.varlist[, 1:6]) #view the first 6 rows and columns of the data to make sure it looks right
+str(pca.varlist) # View all variables in the dataset to make sure you've gotten all BioClim + transformed variables
+# THIS IS WHAT YOU'LL USE FOR PCA (includes original and transformed BioClim variables)
+
+# This row names function manually adds row names in R; might need to remove first row column in .csv file
+```
+
+
+# WorldClim PCA 
+```{R, fig.height = 5, fig.width = 8}
+library(ggfortify)
+yrwa.pca <- prcomp(x=pca.varlist, center=TRUE, scale.=TRUE) 
+summary(yrwa.pca)
+yrwa.pca$rotation # Get PCA loadings and standard deviations
+# Another way to get loadings is: print(yrwa.pca)
+yrwa.pca$x
+
+# prcomp vs. princomp differences to note:
+# prcomp() rotation = princomp() loadings
+# prcomp() x = princomp() scores 
+
+# PCA diagnostic plots: 
+par(mfrow=c(1,2))
+screeplot(yrwa.pca)
+biplot(yrwa.pca)
+
+# Add PCs to the dataframe (pca.varlist) as variables: 
+pca.varlist$PC1 <- yrwa.pca$x[,"PC1"]
+pca.varlist$PC2 <- yrwa.pca$x[,"PC2"]
+
+# Write pca.varlist to .csv
+write.csv(pca.varlist, file = "pcavarlist.csv")
+# Now you can open this file and ensure that proper PC values make it into the mal.bird dataset
+```
+
+Note on 10/31/20: This is a very clunky way to do this and this workflow could be easily streamlined with some data wrangling. Leaving this as described, as it's the method we used for the paper.  
+
+**To add PCA results to .csv data file (this is by no means streamlined):**   
+- Copy and paste PCA results from pca.varlist dataframe into a blank Excel template  
+- Make sure working file is sorted by "ForPCA" column  
+- Paste PCA values into this Excel file  
+- Sort by Site ID and manually fill in PCA values appropriately (e.g. all site 1 gets the same PCA values)  
+- Leave sorted by site, save .csv with PCA values  
+- Re-import the data with PCA values. This is what you'll use for the graph below & modeling. 
+NOTE: all PCA values have been added to the mal.bird dataset, which is already imported. 
+
+Notes: you don't want to use "rotation" to add PCs to the data frame; you want to use "x", which represents scores. This is synonymous with Erik's code for princomp(). Adding rotations warps the data frame and adds the actual loadings, when what you want are the scores (x values) for the loadings. That's why it took you so long to get this added properly. 
+ 
+Notes:
+[ ] = part of an array (ex: [,1], [1,1], [1,] - pull values from array; 1st = row, 2nd = column)
+( ) = for performing a function
+{ } = block of commands you want to run together 
+
+**PCA Interpretation:**  
+- The first 2 principal components explain `r signif(sum(summary(yrwa.pca)$sdev[1:2]^2) / sum(summary(yrwa.pca)$sdev^2), 4)` percent of the variability. 
+- With PCs 1, 2, and 3, 92.2% of the variation is explained. Although I like that very high number, I would also like to be able to plot my data in 2D, so I'll opt to use PCs 1 and 2.  
+
+**PC1**
+- PC`r i.print <- 1; signif(i.print,1)` explains
+`r signif(100*yrwa.pca$sdev[i.print]^2/sum(yrwa.pca$sdev^2), 3)`%
+of the total variation.
+
+As PC`r signif(i.print,1)` increases, 
+bio1_12, bio2_12, bio4_12, bio5_12, bio6_12, bio7_12, bio8_12, cubebio9_12, bio10_12, and bio11_12 **increase**, while bio3_12, bio12_12, bio13_12, logbio14_12, bio15_12, bio16_12, logbio17_12, bio18_12, bio19_12 **decrease**. 
+
+**Stated another way:**
+As PC`r signif(i.print,1)` increases, 
+Annual Mean Temperature, Mean Diurnal Range (Mean of monthly (max temp - min temp)), Temperature Seasonality (standard deviation x 100), ax Temperature of Warmest Month, Min Temperature of Coldest Month, Temperature Annual Range (BIO5-BIO6), Mean Temperature of Wettest Quarter, Mean Temperature of Driest Quarter, Mean Temperature of Warmest Quarter, and Mean Temperature of Coldest Quarter **increase**, while Isothermality (BIO2/BIO7) (x 100), Annual Precipitation, Precipitation of Wettest Month, Precipitation of Driest Month, Precipitation Seasonality (Coefficient of Variation), Precipitation of Wettest Quarter, Precipitation of Driest Quarter, Precipitation of Warmest Quarter, Precipitation of Coldest Quarter **decrease**. 
+
+**To condense this interpretation:** 
+As PC`r signif(i.print,1)` increases,
+all temperature variables (annual mean, monthly mean, diurnal range, annual range, temperature seasonality, max and min temperatures of warmest and coldest months, and max and min temperatures of coldest and wettest quarters) increase, **increase** while isothermality and all precipitation variables (annual, wettest and driest months, seasonality, wettest and driest quarters, etc.) **decrease**. 
+
+AKA, all temperature variables increase and isothermality + all precipitation variables decrease. 
+
+
+**PC2**  
+- PC`r i.print <- 2; signif(i.print,1)` explains
+`r signif(100*yrwa.pca$sdev[i.print]^2/sum(yrwa.pca$sdev^2), 3)`%
+of the total variation.
+
+As PC`r signif(i.print,2)` increases, 
+bio4_12, bio7_12, cubebio9_12, bio12_12, logbio14_12, logbio17_12, and bio19_12 **increase**, while bio1_12, bio2_12, bio3_12, bio5_12, bio6_12, bio8_12, bio10_12, bio11_12, bio13_12, bio15_12, bio16_12, and bio18_12 **decrease**. 
+
+**Stated another way:**
+As PC`r signif(i.print,2)` increases, 
+Temperature Seasonality, Temperature Annual Range, Mean Temperature of Driest Quarter, Precipitation of Driest Month, Precipitation of Driest Quarter, and Precipitation of Coldest Quarter, and Annual Precipitation **increase**, while Annual Mean Temperature, Mean Diurnal Range (Mean of monthly (max temp - min temp)), Isothermality (BIO2/BIO7) (x 100), Max Temperature of Warmest Month, Min Temperature of Coldest Month, Mean Temperature of Wettest Quarter, Mean Temperature of Warmest Quarter, Mean Temperature of Coldest Quarter, Precipitation of Wettest Month, Precipitation Seasonality (Coefficient of Variation), Precipitation of Wettest Quarter, and Precipitation of Warmest Quarter **decrease**. 
+
+**To condense this interpretation:**
+As PC`r signif(i.print,2)` increases, 
+Temperature Seasonality (variation), Temperature Annual Range, Mean Temperature of Driest Quarter, Precipitation of Driest Month, Precipitation of Driest Quarter, and Precipitation of Coldest Quarter, and Annual Precipitation **increase**, while Annual Mean Temperature, Mean Diurnal Range, Isothermality, Max Temperature of Warmest Month, Min Temperature of Coldest Month, Mean Temperature of Wettest Quarter, Mean Temperature of Warmest Quarter, Mean Temperature of Coldest Quarter, Precipitation of Wettest Month, Precipitation Seasonality, Precipitation of Wettest Quarter, and Precipitation of Warmest Quarter **decrease**. 
+
+Temperature range and variation increase + annual precpitation and precipitation of dry and cold periods increases while mean temp, diurnal range, isothermality, temps of wet and warm, precip seasonality, and precip of other stuff decreases. 
+
+
+## Plot PCA Results: 
+```{R}
+# Plot PC1 and PC2 by site (all points appear in black): 
+autoplot(yrwa.pca) # colour = 'site') 
+# This plot prints proper PCA output. I can't get this to colour by site though because site isn't a variable in the PCA dataset
+
+library(ggplot2)
+p1 <- ggplot(data=mal.bird, aes(x=PC1, y=PC2, color=site))
+p1 <- p1 + geom_point(size=1.5)
+#p1 <- p1 + geom_jitter(position = position_jitter(width = 0.1), alpha = 1/3, size=2.5)
+p1 <- p1 + labs(x = "PC1", y = "PC2", color="Site")
+#p1 <- p1 + scale_y_continuous(limits=c(-0.3,0.3), breaks = c(-0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3))
+#p1 <- p1 + scale_x_continuous(limits=c(-0.5,0.3), breaks = c(-0.5, -0.4, -0.3, -0.1, 0, 0.1, 0.2, 0.3))
+p1 <- p1 + theme_bw()
+p1 <- p1 + theme(plot.background = element_blank())
+p1 <- p1 + theme(panel.grid.major = element_blank())
+p1 <- p1 + theme(panel.grid.minor = element_blank())
+p1 <- p1 + theme(panel.background = element_blank())
+print(p1)
+
+# How to get circles/polygons around sites w/ labels? 
+```
+
+
+
+
+# PART 2: What factors explain infection probability? 
+
+# NOTE ON MODELING SPECIFICATION - 5/26/17:   
+- Exclude age and sex from all models! See results of Chi-square above. Neither is significant in any test. 
+
+**Predictors to include in models:**   
+- Site (should be included in *every* model).   
+- Elevation (prediction: strong a priori reason to include.)  
+- PC1  
+- PC2  
+- Latitude (prediction: latitude is more about spatial proximity than temperature differences. Justification for including latitude *and* elevation: I think it's that lower elevations are more northern latitudes more closely resemble higher elevations at more southern latitudes...?).
+
+**Other variables (not included in models):**
+- Mass (prediction: greater infection leads to decreased body weight; therefore, lighter birds should have more malaria than heavier birds)  
+- Relative.heart mass (prediction: heart mass is a measure of circulatory compensation. Malaria infection could cause hypertrophy of the heart from anemia. ...so do birds with malaria have lighter or heavier hearts?)
+
+
+**Model specification (set of candidate models to consider) notes:**
+Null model: intercept 
+Global model: site + elev + PC1 + PC2 + lat
+
+H0: little to no lack of fit
+HA: model does not fit the data
+
+
+## Standardize input variables prior to beginning modeling 
+```{R}
+# Standardizing allows you to interpret model parameters that are all set to different scales 
+# Here, I'll manually standardize each input variable following the method in standardize()
+# I can't use standardize() with glmulti objects, as it's not compatible; hence manual standardization
+# standardize() centers data and divides by 2 SD (as recommended in Gelman 2008)
+# Centering = subtract the mean
+# standardizing = divides by 2 SD
+
+# Note: # site - can't standardize because you can't take the mean of a factor variable 
+# x1 <- (x1-mean(x1))/(2*sd(x1))   # TEMPLATE: standardization by Gelman method
+
+# Elevation 
+elev.z <- (mal.bird$elev-mean(mal.bird$elev))/(2*sd(mal.bird$elev)) # standardize
+mal.bird$elev.z <- elev.z # add standardized elev to data frame 
+sd(elev.z)
+
+# PC1
+PC1.z <- (mal.bird$PC1-mean(mal.bird$PC1))/(2*sd(mal.bird$PC1)) # standardize
+mal.bird$PC1.z <- PC1.z # add standardized elev to data frame 
+sd(PC1.z)
+
+# PC2
+PC2.z <- (mal.bird$PC2-mean(mal.bird$PC2))/(2*sd(mal.bird$PC2)) # standardize
+mal.bird$PC2.z <- PC2.z # add standardized elev to data frame 
+sd(PC2)
+
+# lat
+lat.z <- (mal.bird$lat-mean(mal.bird$lat))/(2*sd(mal.bird$lat)) # standardize
+mal.bird$lat.z <- lat.z # add standardized elev to data frame 
+sd(lat.z)
+```
+
+
+## 1) Model 1: Overall prevalence of Haemoproteus (`hYN`)
+
+Note: Null and full (global) models will automatically be included in glmulti output, but may not be visible, depending on the confsetsize specified. 
+
+For more details, see this excellent glmulti() tutorial: http://www.metafor-project.org/doku.php/tips:model_selection_with_glmulti
+
+## hYN: Model selection w/ glmulti()
+```{R}
+library(R.utils) # Must load this package in order to get setOption to work (below; necessary for QAICc)
+setOption('glmulti-cvalue',1.320017) # This sets the QAICc value to be c.hat, overdispersion parameter
+# NOTE: RUN GLMULTI WITH AICC FIRST; EVALUATE C HAT AND DEVIANCE AND *THEN* SWITCH TO QAICC
+
+library(glmulti) # Note: glmulti is defined as an S4 function
+glmulti.hYN <-
+    glmulti(hYN ~ site + elev.z + PC1.z + PC2.z + lat.z, data = mal.bird,
+            level = 1,               # No interaction considered; change to 2 if including interactions
+            method = "h",            # Exhaustive approach; use "g" if wanting genetic algorithm
+            crit = "qaicc",          # Information Criterion. Options: AIC, BIC, AICc, QAIC/QAICc
+            confsetsize = 50,        # Keep 20 best models
+            plotty = F, report = F,  # No plot or interim reports while running
+            fitfunction = "glm",     # glm function
+            family = binomial)       # binomial family for logistic regression
+
+
+print(glmulti.hYN) # Brief results summary; IC refers to Information Criterion (AICc, in this case)
+plot (glmulti.hYN) # Plots AICc score profile of models specified 
+# Red line is cut-off: models above the red line are > AICc 2 away from the best model (lowest AICc)
+
+# Ranks models by AICc and provides weights. Similar to AICcmodavg(), but doesn't give delta AIC. 
+weightable.hYN <- weightable(glmulti.hYN)
+weightable.hYN
+# Models with standardized variables produce the same results as unstandardized
+```
+
+
+# HYN: Estimate c.hat, test goodness of fit
+```{R}
+# Specify global model (from initial AICc results)
+global.hYN <- glmulti.hYN@objects[[32]] # this is currently set to QAICc global model (not AICc)
+# Make sure you change this model number to match QAICc results! Remember: this code pulls a model object from
+# glmulti, and the ranking of the global model will change between the AICc and QAICc versions. 
+# C.hat calculations and data should be the same; just make sure this global model matches current output. 
+
+# Test residual deviance for lack-of-fit (if > 0.10, little-to-no lack-of-fit)
+dev.p.val.full <- 1 - pchisq(global.hYN$deviance, global.hYN$df.residual)
+dev.p.val.full
+# Global model does NOT fit well (p = 0.00359)
+
+# Estimate of c.hat (overdispersion) = model deviance/residual degrees of freedom
+# If c.hat > 1, use QAICc instead of AICc
+c.hat.hYN <- global.hYN$deviance/global.hYN$df.residual
+c.hat.hYN
+# mal.YN c.hat = 1.320017; re-run glmulti with QAICc
+```
+
+
+# hYN: Cull the model set
+```{R}
+# Make a subset of models based on Arnold's rule cut-off: 
+glmulti.h1 <- glmulti.hYN@objects[[1]]
+glmulti.h3 <- glmulti.hYN@objects[[3]]
+glmulti.h5 <- glmulti.hYN@objects[[5]]
+glmulti.h6 <- glmulti.hYN@objects[[6]]
+glmulti.h10 <- glmulti.hYN@objects[[10]]
+glmulti.h14 <- glmulti.hYN@objects[[14]]
+glmulti.h15 <- glmulti.hYN@objects[[15]]
+glmulti.h17 <- glmulti.hYN@objects[[17]]
+glmulti.h25 <- glmulti.hYN@objects[[25]]
+glmulti.h26 <- glmulti.hYN@objects[[26]]
+
+# Create a new culled set of models that concatenates extracted subset
+# You'll use this for model-averaging, etc. 
+hYN.culled.set <- list(glmulti.h1, glmulti.h3, glmulti.h5, glmulti.h6, glmulti.h10, glmulti.h14, glmulti.h15, glmulti.h17, glmulti.h25, glmulti.h26)
+
+##assign names to each model (for use with modavg below)
+modnames.hYN <- c("glmulti.h1", "glmulti.h3", "glmulti.h5", "glmulti.h6", "glmulti.h10", "glmulti.h14", "glmulti.h15", "glmulti.h17", "glmulti.h25", "glmulti.h26") 
+
+# NOTE: GOING TO LIST SITE AS REF CATEGORY, RATHER THAN TRY TO EXTRACT VALUES (uncomment if you change mind)
+# Site model "cand" set for estimation of "Site:Capitan" below:
+#malYN.cand.capitan <- list(glmulti19)
+#modnames.malYN.cand.capitan <- c("glmulti19")
+
+# Plug top models, global model, and null models into AICcmodavg
+# This effectively does what weightable does, but it gives you delta QAICc values
+library(AICcmodavg)
+hYN.culled.aictab <- aictab(hYN.culled.set, modnames = modnames.hYN, second.ord = TRUE, sort = TRUE, c.hat = 1.320017) # second.ord = TRUE specifies AICc (small sample size); sort = TRUE specifies QAICc
+hYN.culled.aictab
+```
+
+
+## hYN: Compute model-averaged parameter estimate (Multimodel inference)
+```{R}
+# Get model-averaged estimates of parameters of interest from a set of candidate models
+# Also computes unconditional standard error and unconditional confidence intervals
+# Need to use AICcmodavg because MuMIn can't rank by QAICc unless models were created in MuMIn
+
+# elev 
+modavg(hYN.culled.set, parm = "elev.z", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+# These are correct: elev ests and SEs are all so small that they're 0.00 when rounded
+
+# DON'T NEED THESE NOW THAT ABOVE MODAVG() FUNCTION GIVES LARGER ELEVATION READINGS
+# Elev vectors to use in modavgcustom - derived from glmulti.h1, glmulti.h6, and glmulti.10 (all models 
+# in which elev appears)
+#LL.elev <- c(-86.52, -87.82, -89.74) # LL values for models in cand set (from hYN.culled.aictab)
+#param.elev <- c(4, 4, 3) # Num params for all models in the cand set (from hYN.culled.aictab, above)
+#estimate.elev <- c(-0.002105, -0.001568, -0.001706) # elev ests, taken from indiv models (h1, h6, h10)
+#est.se <- c(0.0005954, 0.0005664, 0.000568) # SEs for elev ests, taken from summary(modname) for set
+#modnames.elev <- c("glmulti.h1", "glmulti.h6", "glmulti.h10")
+
+#modavgCustom(logL = LL.elev, K = param.elev, modnames = modnames.elev, estimate = estimate.elev, se = #est.se, second.ord = TRUE, nobs = 3, uncond.se = "revised", conf.level = 0.95, c.hat = 1.320017, useBIC = #FALSE)
+# Doing this manually allowed me to better understand what's happening with elevation estimates
+# They're basically all so small that when rounded to 2 decimal places, estimates are 0.00
+
+# latitude
+modavg(hYN.culled.set, parm = "lat.z", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+# PC1
+modavg(hYN.culled.set, parm = "PC1.z", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+# PC2
+modavg(hYN.culled.set, parm = "PC2.z", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+# Intercept 
+modavg(hYN.culled.set, parm = "(Intercept)", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+
+# site - for categorical, must specify each individually as it appears
+modavg(hYN.culled.set, parm = "siteChuska", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+modavg(hYN.culled.set, parm = "siteJemez", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+modavg(hYN.culled.set, parm = "siteMtTaylor", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+modavg(hYN.culled.set, parm = "siteSangreDC", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+modavg(hYN.culled.set, parm = "siteSanMateo", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+modavg(hYN.culled.set, parm = "siteWhite", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+modavg(hYN.culled.set, parm = "siteZuni", modnames = modnames.hYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE, c.hat = 1.320017)
+
+
+# Relative variable importance with MuMIn - easier, more streamlined, output cleaner
+# It isn't ideal that I'm bouncing back and forth between packages, but...so be it. 
+library(MuMIn)
+# Get relative importance of all variables in the culled set - note that this isn't balanced, but DAMN. 
+# These weights are SUMMED AICc weights from all the models in which individual variables appear 
+importance(hYN.culled.set)
+
+model.avg(hYN.culled.set) # JESSIE, IS THIS HOW TO COMPUTE EFFECT SIZES? ALSO: DO YOU TAKE SUBSET OR FULL?
+```
+
+
+# hYN: calculate pseudo R^2 for models 
+Calculate pseudo R^2 as recommended by Nakagawa and Shielzeth (2012) and Nick Fountain-Jones - see his blog post about it here: https://nickfountainjones.wordpress.com/2015/11/13/calculating-effect-size-for-linear-mixed-models/ (although it's really not very helpful)
+```{r}
+# Calculate pseudo R^2 as recommended by Nakagawa and Shielzeth (2012) and Nick Fountain-Jones
+library(piecewiseSEM)
+
+# Calculate R^2
+# sem.model.fits confirms that link=logit, although it only returns marginal R^2 only (because we have no 
+# fixed or random effects, and hence no conditional R^2)
+sem.model.fits(glmulti.h1) 
+sem.model.fits(glmulti.h3)
+sem.model.fits(glmulti.h5)
+sem.model.fits(glmulti.h6)
+sem.model.fits(glmulti.h10)
+sem.model.fits(glmulti.h14)
+sem.model.fits(glmulti.h15)
+sem.model.fits(glmulti.h17)
+sem.model.fits(glmulti.h25)
+sem.model.fits(glmulti.h26) # intercept only
+
+# template code for calculating odds ratios
+exp(glmulti.h26$coefficients) #calculate odds ratios
+```
+
+
+## 2) Model 2: Overall prevalence of Plasmodium (`pYN`)
+
+## pYN: Model selection w/ glmulti()
+```{R}
+library(glmulti) 
+glmulti.pYN <-
+    glmulti(pYN ~ site + elev.z + PC1.z + PC2.z + lat.z, data = mal.bird,
+            level = 1,               # No interaction considered; change to 2 if including interactions
+            method = "h",            # Exhaustive approach; use "g" if wanting genetic algorithm
+            crit = "aicc",           # Information Criterion. Options: AIC, BIC, AICc, QAIC/AQICc
+            confsetsize = 50,        # Keep 20 best models
+            plotty = F, report = F,  # No plot or interim reports while running
+            fitfunction = "glm",     # glm function
+            family = binomial)       # binomial family for logistic regression
+# Note: see below. Global model slightly underdispersed; retain AICc. 
+
+print(glmulti.pYN) 
+plot(glmulti.pYN) 
+
+weightable.pYN <- weightable(glmulti.pYN)
+weightable.pYN
+```
+
+# pYN: Estimate c.hat, test goodness of fit
+```{R}
+# Specify global model (from initial AICc results)
+global.pYN <- glmulti.pYN@objects[[30]]
+
+# Test residual deviance for lack-of-fit (if > 0.10, little-to-no lack-of-fit)
+dev.p.val.full <- 1 - pchisq(global.pYN$deviance, global.pYN$df.residual)
+dev.p.val.full
+# Global model fits well!
+
+# Estimate of c.hat (overdispersion) = model deviance/residual degrees of freedom
+# If c.hat > 1, use QAICc instead of AICc
+c.hat.pYN <- global.pYN$deviance/global.pYN$df.residual
+c.hat.pYN
+# pYN c.hat = 0.434, indicating underdispersion. Keep c.hat at 1; retain AICc. 
+# Underdispersion can indicate poor fit, although in this case the GOF test indicates excellent fit.
+```
+
+# pYN: Cull the model set
+```{R}
+# Make a subset of models based on Arnold's rule cut-off: 
+glmulti.p1 <- glmulti.pYN@objects[[1]] # Intercept is top model, all are worse. Retain only intercept.
+
+# Create a new culled set of models: 
+pYN.culled.set <- list(glmulti.p1)
+
+##assign names to H candidate model set
+modnames.pYN <- c("glmulti.p1") 
+
+# Use AICmodavg to get AIC values, delta AIC, weights, etc. 
+# Input individually instead of using model list above, as that will reshuffle names
+library(AICcmodavg)
+pYN.culled.aictab <- aictab(list(glmulti.p1), c("glmulti.p1"))
+pYN.culled.aictab
+```
+
+
+## pYN: Compute model-averaged parameter estimate (Multimodel inference)
+```{R}
+# Get model-averaged estimates of parameters of interest from a set of candidate models
+# Also computes unconditional standard error and unconditional confidence intervals
+# Need to use AICcmodavg because MuMIn can't rank by QAICc unless models were created in MuMIn
+
+# elev
+modavg(pYN.culled.set, parm = "elev.z", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+# latitude
+modavg(pYN.culled.set, parm = "lat.z", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+# PC1
+modavg(pYN.culled.set, parm = "PC1.z", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+# PC2
+modavg(pYN.culled.set, parm = "PC2.z", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+# Intercept
+modavg(pYN.culled.set, parm = "(Intercept)", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+
+# site - for categorical, must specify each individually as it appears
+modavg(pYN.culled.set, parm = "siteChuska", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(pYN.culled.set, parm = "siteJemez", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(pYN.culled.set, parm = "siteMtTaylor", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(pYN.culled.set, parm = "siteSangreDC", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(pYN.culled.set, parm = "siteSanMateo", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(pYN.culled.set, parm = "siteWhite", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(pYN.culled.set, parm = "siteZuni", modnames = modnames.pYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+
+# Relative variable importance with MuMIn - easier, more streamlined, output cleaner
+# It isn't ideal that I'm bouncing back and forth between packages, but...so be it. 
+library(MuMIn)
+# Get relative importance of all variables in the culled set - note that this isn't balanced, but DAMN. 
+# These weights are SUMMED AICc weights from all the models in which individual variables appear 
+importance(pYN.culled.set)
+```
+
+
+# pYN: calculate pseudo R^2 for models 
+Calculate pseudo R^2 as recommended by Nakagawa and Shielzeth (2012) and Nick Fountain-Jones
+```{r}
+# Calculate pseudo R^2 as recommended by Nakagawa and Shielzeth (2012) and Nick Fountain-Jones
+library(piecewiseSEM)
+
+# Calculate R^2
+sem.model.fits(glmulti.p1) # intercept only
+
+```
+
+
+
+## 3) Model 3: Overall prevalence of Leucocytozoon (`lYN`)
+
+## lYN: Model selection w/ glmulti()
+```{R}
+library(glmulti) # Note: glmulti is defined as an S4 function
+
+glmulti.lYN <-
+    glmulti(lYN ~ site + elev.z + PC1.z + PC2.z + lat.z, data = mal.bird,
+            level = 1,               # No interaction considered; change to 2 if including interactions
+            method = "h",            # Exhaustive approach; use "g" if wanting genetic algorithm
+            crit = "aicc",           # Information Criterion. Options: AIC, BIC, AICc, QAIC/AQICc
+            confsetsize = 50,        # Keep 20 best models
+            plotty = F, report = F,  # No plot or interim reports while running
+            fitfunction = "glm",     # glm function
+            family = binomial)       # binomial family for logistic regression
+
+print(glmulti.lYN) 
+plot (glmulti.lYN)
+
+weightable.lYN <- weightable(glmulti.lYN)
+weightable.lYN
+```
+
+# lYN: Estimate c.hat, test goodness of fit
+```{R}
+# Specify global model (from initial AICc results)
+global.lYN <- glmulti.lYN@objects[[16]]
+
+# Test residual deviance for lack-of-fit (if > 0.10, little-to-no lack-of-fit)
+dev.p.val.full <- 1 - pchisq(global.lYN$deviance, global.lYN$df.residual)
+dev.p.val.full
+# Global model fits well (0.967)!
+
+# Estimate of c.hat (overdispersion) = model deviance/residual degrees of freedom
+# If c.hat > 1, use QAICc instead of AICc
+c.hat.lYN <- global.lYN$deviance/global.lYN$df.residual
+c.hat.lYN
+# lYN c.hat = 0.8068, indicating slight underdispersion. Keep c.hat at 1; retain AICc. 
+# Underdispersion can indicate poor fit, although in this case the GOF test indicates excellent fit.
+```
+
+
+# lYN: Cull the model set
+Note: actual culling done in Excel
+```{R}
+# Make a subset of models based on Arnold's rule cut-off: 
+glmulti.l1 <- glmulti.lYN@objects[[1]]
+glmulti.l17 <- glmulti.lYN@objects[[17]]
+glmulti.l18 <- glmulti.lYN@objects[[18]]
+glmulti.l21 <- glmulti.lYN@objects[[21]]
+
+# Create a new culled set of models: 
+lYN.culled.set <- list(glmulti.l1, glmulti.l17, glmulti.l18, glmulti.l21)
+
+##assign names to H candidate model set
+modnames.lYN <- c("glmulti.l1", "glmulti.l17", "glmulti.l18", "glmulti.l21") 
+
+# Use AICmodavg to get AIC values, delta AIC, weights, etc. 
+# Input individually instead of using model list above, as that will reshuffle names
+library(AICcmodavg)
+lYN.culled.aictab <- aictab(list(glmulti.l1, glmulti.l17, glmulti.l18, glmulti.l21), c("glmulti.l1", "glmulti.l17", "glmulti.l18", "glmulti.l21"))
+lYN.culled.aictab
+```
+
+
+## lYN: Compute model-averaged parameter estimate (Multimodel inference)
+```{R}
+# Get model-averaged estimates of parameters of interest from a set of candidate models
+# Also computes unconditional standard error and unconditional confidence intervals
+# Need to use AICcmodavg because MuMIn can't rank by QAICc unless models were created in MuMIn
+
+# elev
+modavg(lYN.culled.set, parm = "elev.z", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+# All results are 0.00, which is consistent with below
+
+# model.avg(lYN.culled.set, rank = NULL, revised.var = TRUE)
+
+# DON'T NEED THIS NOW THAT STANDARDIZED ELEVATION GIVES LARGER VALUES
+# Elev vectors to use in modavgcustom - derived from glmulti.l17 (all models w/ elev)
+# in which elev appears)
+#leuco.ll.elev <- c(-80.31) # log L values for all models in cand set (from lYN.culled.aictab, above)
+#leuco.param.elev <- c(2) # Num parameters for all models in the cand set (from lYN.culled.aictab, above)
+#leuco.estimate.elev <- c(0.001343) # elev estimate, taken glmulti.l17
+#leuco.est.se <- c(0.000670) # SE for elev estimate, taken from summary(glmulti.l17)
+#leuco.modnames.elev <- c("glmulti.l17")
+
+#modavgCustom(logL = leuco.ll.elev, K = leuco.param.elev, modnames = leuco.modnames.elev, estimate = #leuco.estimate.elev, se = leuco.est.se, second.ord = TRUE, nobs = 1, uncond.se = "revised", conf.level = #0.95, useBIC = FALSE)
+# Doing this manually allowed me to understand what's happening
+# All estimates are 0.00 because elev estimates are so, so small
+
+# latitude doesn't appear in final Leuco model set
+
+# PC1
+modavg(lYN.culled.set, parm = "PC1.z", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+# PC2 doesn't appear in final Leuco model set 
+#modavg(lYN.culled.set, parm = "PC2.z", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = # "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+# Intercept
+modavg(lYN.culled.set, parm = "(Intercept)", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+
+# site - for categorical, must specify each individually as it appears
+modavg(lYN.culled.set, parm = "siteChuska", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(lYN.culled.set, parm = "siteJemez", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(lYN.culled.set, parm = "siteMtTaylor", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(lYN.culled.set, parm = "siteSangreDC", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(lYN.culled.set, parm = "siteSanMateo", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(lYN.culled.set, parm = "siteWhite", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+modavg(lYN.culled.set, parm = "siteZuni", modnames = modnames.lYN, second.ord = TRUE, nobs = NULL, uncond.se = "revised", conf.level = 0.95, exclude = NULL, warn = TRUE)
+
+
+# Relative variable importance with MuMIn - easier, more streamlined, output cleaner
+# It isn't ideal that I'm bouncing back and forth between packages, but...so be it. 
+library(MuMIn)
+# Get relative importance of all variables in the culled set - note that this isn't balanced, but DAMN. 
+# These weights are SUMMED AICc weights from all the models in which individual variables appear 
+importance(lYN.culled.set)
+```
+
+# lYN: calculate pseudo R^2 for models 
+Calculate pseudo R^2 as recommended by Nakagawa and Shielzeth (2012) and Nick Fountain-Jones
+```{r}
+# Calculate pseudo R^2 as recommended by Nakagawa and Shielzeth (2012) and Nick Fountain-Jones
+library(piecewiseSEM)
+
+# Calculate R^2
+sem.model.fits(glmulti.l1)
+sem.model.fits(glmulti.l17)
+sem.model.fits(glmulti.l18)
+sem.model.fits(glmulti.l21)
+
+library(rsq)
+rsq(glmulti.l1, fitfunc=glm)
+```
+
+
+
+# International Journal for Parasitology, Reviewer #2's Tutorial for interpreting magnitude of effect sizes in YRWA paper
+```{r}
+# values taken from Table 3 in the paper
+
+# ex: how does H prevalence change with elevation? 
+average <- boot::inv.logit(-0.12 + (-1.13 * 0)) # where -0.12 beta value for intercept and -1.13 is elevation. 
+x.equals.1 <- boot::inv.logit(-0.12 + (-1.13 * 1))
+
+average
+# 0.4700359 
+# avg prob of infection (when all scaled covariates are at the mean, which is 0 in this case)
+# is ~47% (estimated prevalence is more useful than raw prevalence values for reporting, as it takes into account the underlying uncertainty). 
+
+x.equals.1
+# 0.2227001 
+
+x.equals.1 - average
+# -0.2473358 # This probability decreases by ~25% for every one-unit increase in the predictor variable. 
+
+# Since the predictors are scaled to unit variance, this then needs to be back-transformed:
+# For example, if we are talking about elevation (in meters) with a standard deviation of 100:
+
+sd.x <- 100
+((x.equals.1 - average) / sd.x) * 50
+# -0.1236679
+
+# Here we could say that the probability of infection decreases by ~12% for every 50m increase in elevation.
+```
+
+
+# Average (estimated) probability of infection for each genus 
+```{r}
+# first number is intercept; second number is predictor
+# doesn't matter which predictor you sub in; all should give same result
+H.prob.infection <- boot::inv.logit(-0.12); H.prob.infection # inverse logit * intercept
+P.prob.infection <- boot::inv.logit(-2.63); P.prob.infection 
+L.prob.infection <- boot::inv.logit(-1.3); L.prob.infection
+```
+
+
+# Estimated probability given changes in elevation and latitude
+```{r}
+# HOW DOES H INFECTION PROB. CHANGE WITH ELEVATION?
+H.elev.equals.1 <- boot::inv.logit(-0.12 + (-1.13 * 1)); H.elev.equals.1
+
+H.elev.equals.1 - H.prob.infection
+# Probability of H infection decreases by ~24.7% for every one-unit increase in elevation. 
+
+# Since the predictors are scaled to unit variance, this then needs to be back-transformed:
+# For example, if we are talking about elevation (in meters) with a standard deviation of 0.5:
+# (and yes, all my standardized input variables have a standard deviation of 0.5 because of standardizing)
+sd.all.vars <- 0.5
+((H.elev.equals.1 - H.prob.infection) / sd.all.vars) * 50
+# -0.1236679
+# So, the probability of H infection decreases by ~24.73 for every 50m increase in elevation.
+
+
+# HOW DOES H INFECTION PROB. CHANGE WITH LATITUDE?
+H.lat.equals.1 <- boot::inv.logit(-0.12 + (0.72 * 1)); H.lat.equals.1
+
+H.lat.equals.1 - H.prob.infection
+# Probability of H infection increases by ~17.5% for every one-unit increase in elevation. 
+
+# Now, back-transform because variables are scaled to unit variance:
+sd.all.vars <- 0.5
+((H.lat.equals.1 - H.prob.infection) / sd.all.vars) * 1
+# So, the probability of H infection increases by ~35.12% for every 1 degree increase in latitude
+
+
+# HOW DOES L INFECTION PROB. CHANGE WITH ELEVATION?
+L.elev.equals.1 <- boot::inv.logit(-1.3 + (0.77 * 1)); H.elev.equals.1
+
+L.elev.equals.1 - L.prob.infection
+# Probability of H infection increases by ~15.6% for every one-unit increase in elevation. 
+
+# Now, back-transform because variables are scaled to unit variance:
+sd.all.vars <- 0.5
+((L.elev.equals.1 - L.prob.infection) / sd.all.vars) * 50
+# So, the probability of L infection increases by ~15.63% for every 50m increase in elevation.
+
+```
+
+
+# NOTE: H, L, AND P COUNTS ARE POISSON! 
+These plots are meant to help me visualize distributions. Based on original conversations with Erik, I set these w/ Poisson, but changed them to binomial based on fits. However, Erik said that they really should be Poisson. My lambda value is very low, which is driven by a high degree of 0s in the data. I can't help this, so of course QQplots will look odd. That said, these do follow a poisson distribution, given that each represents count data. So, although they're less-than-ideal poissons, they need to be poisson. 
+```{R}
+hist(mal.bird.naomit$l.count)  
+hist(mal.bird.naomit$h.count)
+hist(mal.bird.naomit$p.count) 
+hist(mal.bird.naomit$mal.count)
+```
+
+
+
+## Predict p.hat for plots (`mal`)
+NOTE ON 6/9/17: This code is all working, but you want to see which model to plug in (currently glmulti1 is there, but I'm not sure I want that). Also consider that you don't even want this plot split by sex, since you're not including that in any calculations/results, really. 
+
+Idea: you could NOT split by sex, and just calculate probability of malaria by site...?
+```{R}
+# Erik's code chunk - build a function to create average variable values for all variables that are important 
+# predictors in the model. Then, use these to predict p.hat.
+# ddply = splits, applies a function, combines results
+library(plyr)
+newdat <- ddply(mal.bird, c("site", "sex"), function(.X) {
+    elev <- mean(.X$elev, na.rm = TRUE)
+    heart <- mean(.X$  heart, na.rm = TRUE)
+    PC1   <- mean(.X$PC1, na.rm = TRUE)
+    PC2   <- mean(.X$PC2 , na.rm = TRUE)
+    out <- data.frame(elev, heart, PC1, PC2)
+    return(out)
+    }
+  )
+newdat
+
+
+# This will give me predicted values based on averages of the data split by site and sex, plus standard errors
+# Assign them to "fit", which I'll use below to manipulate and add to the dataframe
+# predict() uses all the Load values in dataset, including appended values
+fit <- predict(glmulti1, newdata = newdat, type = "response", se.fit = TRUE)
+newdat$fit    <- fit$fit
+newdat$se.fit <- fit$se.fit
+# CI for fitted values
+newdat <- within(newdat, {
+# added "fitted" to make predictions at appended values
+  fitted    = exp(fit) / (1 + exp(fit))
+  fit.lower = exp(fit - 1.96 * se.fit) / (1 + exp(fit - 1.96 * se.fit))
+  fit.upper = exp(fit + 1.96 * se.fit) / (1 + exp(fit + 1.96 * se.fit))
+  })
+fit
+```
+
+
+## Plot of probability by site 
+```{R}
+# Specify color scheme, although plot below doesn't use this line of code (colors are specified manually):
+malcolors <- c( "#ED5752", "#F56C57", "#BBCF48") # Salmon, Stone, Granny Smith
+
+# Plot the data:
+pd <- position_dodge(0.7) # sets position=position_dodge so you don't have to type it/can auto. specify width
+p6 <- ggplot(newdat, aes(x=site, y=fitted, colour=factor(sex, labels=c("Female", "Male", "Unknown")), group=sex))
+# NOTE: MUST specify "group=sex" above or error bars won't be dodged and geom_line won't print
+# You can also just specify "color=sex", but then it won't edit legend. Add "labels" to change legend labels.
+p6 <- p6 + geom_point(position=pd, size = 3)
+p6 <- p6 + geom_errorbar(aes(ymin=fit.lower, ymax=fit.upper), width=.1, position=pd) 
+# In the above line, specify "color="black" if you want to change error bar color
+#p6 <- p6 + geom_line(position=pd) # Uncomment to add lines connecting points; good for visualizing interactions
+p6 <- p6 + labs(title = "Probability of malaria infection in Yellow-rumped Warblers \n doesn't differ by sex, but does differ by site", y = "Probability of Malaria", x = "Site", color="Sex") #color=Sex for legend title
+# Use this line to change graph colors; and leave the legend blank (`name = " "`)
+p6 <- p6 + scale_color_manual(values=c( "#F56C57", "#336B87", "#BBCF48"))
+p6 <- p6 + theme_bw()
+p6 <- p6 + theme(plot.background = element_blank())
+p6 <- p6 + theme(panel.grid.major = element_blank())
+p6 <- p6 + theme(panel.grid.minor = element_blank())
+p6 <- p6 + theme(panel.background = element_blank())
+print(p6)   
+
+# Interpretation of points with no error bars: 
+# points with no CI: upper and lower are so close I can't tell they're there
+# = GREAT CONFIDENCE, ALL VALUES SO CLOSE TOGETHER
+# for each of these points, check sample size/sampling per site (more birds = future direction )
+```
+
+
+## Multiple comparisons - to examine interactions
+```{R}
+library(lsmeans)
+# fill in your "lm.object", and only use the lines below that apply to your model
+lsmeans(glm.mal.final, list(pairwise ~ site           ), adjust = "tukey")
+# No significant differences between site 
+
+lsmeans(glm.mal.final, list(pairwise ~ site | PC1 ), adjust = "tukey")
+# No significant differences between site and PC1
+
+lsmeans(glm.mal.final, list(pairwise ~ sex           ), adjust = "tukey")
+# No significant differences between sex
+
+lsmeans(glm.mal.final, list(pairwise ~ sex | heart ), adjust = "tukey")
+# No significant differences between sex and heart
+
+# Can't do pairwise comparisons for elev because it's continuous
+# There were no significant pairwise comparisons.
+```
+
+**Results interpretation:**
+- As elevation and PC1 increase, probability of having malaria decreases. As heart mass and PC2 increase, probability of having malaria increases. 
+- Probability of malaria is higher in all sites relative to the baseline site (Capitan). Mt. Taylor, Sangres, Whites, Zunis are significant
+- Probability of malaria is higher for birds of unknown sex and significantly higher for males (relative to females; baseline sex.)
+**Note**: These aren't super biologically meaningful because it's comparing to baselines in both cases - we don't really care what comparisons to the baseline are...we'd be more interested in pairwise differences in this case. 
+
+Discussion point: 
+PC1 results make sense because in PC1, as temperature variables increase, precipitation decreases. And in the model, as PC1 increases, probability of malaria decreases. This suggests a relationship between malaria infection and precipitation, which has been shown in other studies (like Galen and Witt). 
+
+
+-----
+
+# END 
