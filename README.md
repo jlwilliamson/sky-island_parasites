@@ -1,6 +1,6 @@
 # Code for Williamson et al. 2019, 'community composition of sky-island parasites in Audubon's Warblers' [![DOI](https://zenodo.org/badge/308946184.svg)](https://zenodo.org/badge/latestdoi/308946184)
 
-Code and files for [Williamson et al. 2019 "Community composition of sky-island parasites in Audubon's Warblers", International Journal for Parasitology](https://doi.org/10.1016/j.ijpara.2018.11.012)
+Code and files for [Williamson et al. 2019 "Community composition of sky-island parasites in Audubon's Warblers"](https://doi.org/10.1016/j.ijpara.2018.11.012) in International Journal for Parasitology.
 
 Summary of .rmd files: 
 
