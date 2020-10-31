@@ -1,0 +1,134 @@
+---
+title: "YRWA Mapping - Fig. 1"
+author: "Jessie Williamson"
+date: "Revised 7/25/17"
+output: html_document
+---
+
+######
+
+One of several .rmd files associated with Williamson et al. 2019 "Community composition of sky-island parasites in Audubon's Warblers", International Journal for Parasitology: 10.1016/j.ijpara.2018.11.012. 
+
+Script includes code for producing map Figure 1 in Williamson et al. 2019. 
+
+Code originally written as a .Rmd in 2017-2019 but cleaned up a bit for GitHub upload on 10/31/20. 
+
+#####
+
+---
+
+```{R, echo=FALSE}
+# Set GLOBAL R chunk options here
+#   (to hide this message add "echo=FALSE" to the code chunk options)
+
+knitr::opts_chunk$set(comment = NA, message = FALSE, warning = FALSE, width = 100)
+knitr::opts_chunk$set(fig.align = "center", fig.height = 4, fig.width = 6)
+
+#knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+```
+
+---
+
+# Set WD
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/Dropbox (MSBbirds)/Rdirectory/YRWA_Malaria")
+```
+
+Mapping Resources:
+http://www.gis-blog.com/r-raster-data-acquisition/ # This is most helpful tutorial
+SRTM data search: http://srtm.csi.cgiar.org/SELECTION/inputCoord.asp
+https://pakillo.github.io/R-GIS-tutorial/
+http://www.molecularecologist.com/2012/09/making-maps-with-r/
+http://www.spatialecology.com/beyer/assets/Beyer_Introduction_to_geospatial_analysis_in_R.pdf
+
+NOTE: This code will run pretty slowly because these are clunky files. 
+
+
+# Load in packages:
+```{R}
+library(maps) # contains functions I'll need
+library(mapdata) # contains basic world map data 
+library(maptools) # for shapefiles 
+library(scales)
+library(sp)  # classes for spatial data
+library(raster)  # grids, rasters
+library(rasterVis)  # raster visualisation
+library(rgeos)
+library(dismo)
+library(ggmap)
+```
+
+
+# Load in the data:
+```{R}
+sites <- read.csv("YRWA_site_coordinates_mapping.csv") # Load in CSV w/ mean lat/lon for sites
+# one column contains lat, one lon w/ coordinates in decimal degrees
+```
+
+
+Make a map of mean site coordinates:  
+- Enter min and max lat/lon extent into CGIAR-CSI to get full map extent: http://srtm.csi.cgiar.org/SELECTION/inputCoord.asp
+- Use this info to pull appropriate SRTM tiles 
+```{r}
+# download in chunks, later knit w/ mosaic. Adjust these to get AZ.
+# srtm is dataset; returns srtm 90 m data
+# lon pulls longitude of the srtm tile
+# lat pulls latitude of srtm tile
+
+srtm <- getData('SRTM',lon=-110,lat=33)
+srtm2 <- getData('SRTM',lon=-110,lat=33)
+srtm3 <- getData('SRTM',lon=-105,lat=33)
+srtm4 <- getData('SRTM',lon=-110,lat=36)
+srtm5 <- getData('SRTM',lon=-110,lat=36)
+srtm6 <- getData('SRTM',lon=-105,lat=36)
+srtmmosaic <- mosaic(srtm,srtm2,srtm3,srtm4,srtm5,srtm6,fun=mean)
+usa <- getData('GADM',country='USA',level=1) # level 0 = blank; level 1 = county/state lines
+# plot(srtmmosaic) # this just takes extra time 
+
+# Plot points in teal on the grayscale map
+plot(srtmmosaic,xlim=c(-112,-101.7),ylim=c(31,37.5),col=rev(gray.colors(10,0,1))) # this zooms in to the area of NM 
+plot(usa,add=TRUE) # adds boundary of NM 
+points(sites$mean_lon,sites$mean_lat,pch=21,bg="#54D3BF",cex=2.4) # Plots points in teal; adjust "bg" for color 
+# cex should be set to 2.5 for manuscript fig, and ~4 for graphical abstract
+
+# BLM Teal color: #54D3BF
+# Writer for GIS tutorial above says to drag R Studio windows to eliminate white space on either side of the plot
+# although when I do that the dimensions become distorted - takes careful finagling
+
+# add text labels for state names 
+# text(-108.8,31.5,"ARIZONA",cex=0.7,pos=2,font=2)
+
+### also try this but clip AZ: e.g. adjust your -115 to be less to see if this helps; maybe even remove these layers 
+``` 
+
+
+# old mapping code - didn't end up using? 
+```{r}
+srtm <- getData('SRTM',lon=-106,lat=36) 
+plot(srtm)
+srtm2 <- getData('SRTM',lon=-106,lat=33) 
+plot(srtm2)
+srtm3 <- getData('SRTM',lon=-102,lat=33)
+srtm4 <- getData('SRTM',lon=-102,lat=36)
+srtm5 <- getData('SRTM',lon=-108,lat=36)
+srtm6 <- getData('SRTM',lon=-108,lat=33)
+srtmmosaic <- mosaic(srtm,srtm2,srtm3,srtm4,srtm5,srtm6,fun=mean)
+usa <- getData('GADM',country='USA',level=1) # level 0 = blank; level 1 = county/state lines
+
+# Add points to map of US (full color)
+plot(srtmmosaic,xlim=c(-110,-102),ylim=c(31.1,37.25),col=rev(gray.colors(10,0,1))) # Plots a map of NM & AZ; adjust these to clip map
+plot(usa,add=TRUE)
+points(sites$mean_lon,sites$mean_lat,pch=21,bg="darkgray",cex=1.4) # This plots sampling points on map
+
+# Deliminations of raw plot w/out state boundaries, etc. 
+plot(srtmmosaic,xlim=c(-112,-102),ylim=c(31,38))
+```
+
+
+----
+
+# End 
+
+
