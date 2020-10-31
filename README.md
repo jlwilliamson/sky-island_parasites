@@ -13,3 +13,5 @@ Summary of .rmd files:
 `4_EstimateS_richness_plots`: Script to produce alpha richness plots (not in Williamson et al. 2019 main text)
 
 Note: This project wasn't originally maintained as a GitHub repository and is being uploaded after-the-fact. Questions about anything here? Feel free to contact me at williamson [at] unm.edu. 
+
+Please cite: [![DOI](https://zenodo.org/badge/308946184.svg)](https://zenodo.org/badge/latestdoi/308946184)
