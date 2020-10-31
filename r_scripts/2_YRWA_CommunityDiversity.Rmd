@@ -1252,7 +1252,7 @@ plot(haplo.splines$x[,"Geographic"], haplo.splines$y[,"Geographic"], lwd=5, type
 ```
 
 
-**See YRWA CUT for GDM haplogroup model code 
+**See YRWA CUT for GDM haplogroup model code. 
 
 
 ######### END #############
